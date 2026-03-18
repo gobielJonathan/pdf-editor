@@ -219,7 +219,7 @@ export function usePdfDocument() {
   async function embedAllFonts(doc) {
     const [
       Helvetica, HelveticaBold, HelveticaOblique, HelveticaBoldOblique,
-      TimesRoman, TimesBold, TimesItalic, TimesBoldItalic,
+      TimesRoman,
       Courier, CourierBold, CourierOblique, CourierBoldOblique,
     ] = await Promise.all([
       doc.embedFont(StandardFonts.Helvetica),
@@ -227,16 +227,13 @@ export function usePdfDocument() {
       doc.embedFont(StandardFonts.HelveticaOblique),
       doc.embedFont(StandardFonts.HelveticaBoldOblique),
       doc.embedFont(StandardFonts.TimesRoman),
-      doc.embedFont(StandardFonts.TimesBold),
-      doc.embedFont(StandardFonts.TimesItalic),
-      doc.embedFont(StandardFonts.TimesBoldItalic),
       doc.embedFont(StandardFonts.Courier),
       doc.embedFont(StandardFonts.CourierBold),
       doc.embedFont(StandardFonts.CourierOblique),
       doc.embedFont(StandardFonts.CourierBoldOblique),
     ])
     return { Helvetica, HelveticaBold, HelveticaOblique, HelveticaBoldOblique,
-             TimesRoman, TimesBold, TimesItalic, TimesBoldItalic,
+             TimesRoman,
              Courier, CourierBold, CourierOblique, CourierBoldOblique }
   }
 

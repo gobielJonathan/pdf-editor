@@ -19,7 +19,7 @@ const props = defineProps({
     pendingDataUrl: { type: String, default: null }, // data URL for image/signature placement
 })
 
-const emit = defineEmits(['edit', 'rendered', 'add-element', 'update-addition', 'remove-addition', 'text-focus', 'text-blur', 'addition-focus', 'addition-blur'])
+const emit = defineEmits(['edit', 'rendered', 'add-element', 'update-addition', 'remove-addition', 'text-focus', 'text-blur'])
 
 // ── Refs ─────────────────────────────────────────────────────────────────────
 const canvasRef = ref(null)
@@ -150,17 +150,6 @@ function onAdditionMousedown(e, addition) {
     if (props.activeTool) return   // placement mode — don't steal click
     e.stopPropagation()
     selectedAdditionId.value = addition.id
-    // Emit focus info for text additions so the format toolbar can appear
-    if (addition.type === 'text') {
-        emit('addition-focus', {
-            pageNum: props.pageNum,
-            id: addition.id,
-            fontFamily: addition.fontFamily ?? 'Helvetica',
-            bold: addition.bold ?? false,
-            italic: addition.italic ?? false,
-            underline: addition.underline ?? false,
-        })
-    }
     // Click inside text contenteditable — let it handle itself
     if (e.target.closest('.addition-text-inner')) return
 
@@ -187,7 +176,6 @@ function onAdditionMousedown(e, addition) {
 
 function onAdditionTextBlur(e, addition) {
     emit('update-addition', props.pageNum, addition.id, { text: e.target.innerText ?? '' })
-    emit('addition-blur')
 }
 
 function onAdditionDelete(addition) {
@@ -286,10 +274,6 @@ function onKeydown(e) {
                             minHeight: `${item.height}px`,
                             fontSize: `${item.fontSize}px`,
                             lineHeight: `${item.height / Math.max(item.fontSize, 1)}`,
-                            fontWeight: slot.value.formats?.get(item.id)?.bold ? 'bold' : 'normal',
-                            fontStyle: slot.value.formats?.get(item.id)?.italic ? 'italic' : 'normal',
-                            textDecoration: slot.value.formats?.get(item.id)?.underline ? 'underline' : 'none',
-                            fontFamily: slot.value.formats?.get(item.id)?.fontFamily ?? 'inherit',
                         }" contenteditable="true" spellcheck="false" :data-id="item.id" @click.stop="onTextClick(item)"
                         @focus="onFocus(item)" @input="onInput(item, $event)" @blur="onBlur(item, $event)"
                         @keydown="onKeydown" />
@@ -311,14 +295,7 @@ function onKeydown(e) {
                     <!-- Text content -->
                     <div v-if="addition.type === 'text'" :ref="el => setAdditionTextRef(el, addition)"
                         class="addition-text-inner"
-                        :style="{
-                            fontSize: `${addition.fontSize}px`,
-                            color: addition.color,
-                            fontWeight: addition.bold ? 'bold' : 'normal',
-                            fontStyle: addition.italic ? 'italic' : 'normal',
-                            textDecoration: addition.underline ? 'underline' : 'none',
-                            fontFamily: addition.fontFamily ?? 'sans-serif',
-                        }" contenteditable="true"
+                        :style="{ fontSize: `${addition.fontSize}px`, color: addition.color }" contenteditable="true"
                         spellcheck="false" @mousedown.stop @blur="onAdditionTextBlur($event, addition)" @keydown.stop />
                     <!-- Image / signature -->
                     <img v-else :src="addition.dataUrl" class="addition-img" draggable="false" alt="" />
