@@ -1,5 +1,7 @@
 <script setup>
 import { ref } from 'vue'
+import { Analytics } from '@vercel/analytics/vue';
+
 import { usePdfDocument } from '@/composables/usePdfDocument.js'
 import { useToast } from '@/composables/useToast.js'
 import UploadZone from '@/components/UploadZone.vue'
@@ -52,6 +54,7 @@ function closeEditor() {
 
 <template>
   <div class="app-shell">
+    <Analytics />
 
     <!-- ── Screen transition ── -->
     <Transition name="screen" mode="out-in">
