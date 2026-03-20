@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="docGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#7c6fff"/>
+      <stop offset="100%" stop-color="#5a4fe0"/>
+    </linearGradient>
+    <linearGradient id="foldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#a89cff"/>
+      <stop offset="100%" stop-color="#7c6fff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- document body (with top-right folded corner) -->
+  <path d="M10 4 H44 L54 14 V60 H10 Z" fill="url(#docGrad)" rx="3"/>
+
+  <!-- folded corner triangle -->
+  <path d="M44 4 L54 14 H44 Z" fill="url(#foldGrad)" opacity="0.85"/>
+  <!-- fold crease shadow -->
+  <path d="M44 4 L44 14 H54" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="1"/>
+
+  <!-- horizontal lines (document content) -->
+  <rect x="16" y="24" width="20" height="3" rx="1.5" fill="rgba(255,255,255,0.55)"/>
+  <rect x="16" y="31" width="28" height="3" rx="1.5" fill="rgba(255,255,255,0.55)"/>
+  <rect x="16" y="38" width="24" height="3" rx="1.5" fill="rgba(255,255,255,0.55)"/>
+
+  <!-- PDF badge pill at bottom-right -->
+  <rect x="26" y="46" width="24" height="13" rx="6.5" fill="#ff4560"/>
+  <text x="38" y="56.5" text-anchor="middle" font-family="'Arial Black', Arial, sans-serif"
+        font-size="7.5" font-weight="900" fill="#fff" letter-spacing="0.3">PDF</text>
+</svg>

@@ -6,7 +6,9 @@
  * Vue NEVER updates their inner content after initial mount — this is the only
  * way to preserve cursor position while keeping edits reactive.
  */
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+
+const RENDER_SCALE = 1.8   // must match composable
 
 const props = defineProps({
     pageNum: { type: Number, required: true },
@@ -19,6 +21,7 @@ const props = defineProps({
     pendingDataUrl: { type: String, default: null }, // data URL for image/signature placement
     searchMatchIds: { type: Object, default: () => new Set() },   // Set<itemId>
     searchCurrentId: { type: String, default: null },             // currently focused match
+    recordFormatFn: { type: Function, default: null },            // (pageNum, itemId, fmt) → void
 })
 
 const emit = defineEmits(['edit', 'rendered', 'add-element', 'update-addition', 'remove-addition', 'text-focus', 'text-blur'])
@@ -72,6 +75,11 @@ onMounted(() => {
         { rootMargin: '300px' },
     )
     if (containerRef.value) observer.observe(containerRef.value)
+    document.addEventListener('keydown', onGlobalKeydown)
+})
+
+onUnmounted(() => {
+    document.removeEventListener('keydown', onGlobalKeydown)
 })
 
 // ── Imperative DOM ref management ────────────────────────────────────────────
@@ -96,6 +104,27 @@ function setDomRef(el, item) {
 
 // ── Text utilities ────────────────────────────────────────────────────────────
 const isEdited = (item) => slot.value.edits?.has(item.id)
+
+// Active text item reference & format
+const activeItem = computed(() => textItems.value.find(i => i.id === activeItemId.value) ?? null)
+const activeItemFormat = computed(() => slot.value.formats?.get(activeItemId.value) ?? {})
+
+function updateTextFormat(changes) {
+    if (!activeItemId.value || !props.recordFormatFn) return
+    const updated = { ...activeItemFormat.value, ...changes }
+    props.recordFormatFn(props.pageNum, activeItemId.value, updated)
+}
+
+function discardTextEdit(item) {
+    // Clear edit + format from store
+    emit('edit', props.pageNum, item.id, null)
+    props.recordFormatFn?.(props.pageNum, item.id, null)
+    // Reset DOM to original text
+    const el = domRefs.get(item.id)
+    if (el) el.innerText = item.str
+    activeItemId.value = null
+    el?.blur()
+}
 
 // ── Page click — place new addition ──────────────────────────────────────────
 function onPageClick(e) {
@@ -155,6 +184,18 @@ function onAdditionMousedown(e, addition) {
     // Click inside text contenteditable — let it handle itself
     if (e.target.closest('.addition-text-inner')) return
 
+    startDrag(e, addition)
+}
+
+function onDragHandleMousedown(e, addition) {
+    if (props.activeTool) return
+    e.stopPropagation()
+    e.preventDefault()   // prevent text selection while dragging handle
+    selectedAdditionId.value = addition.id
+    startDrag(e, addition)
+}
+
+function startDrag(e, addition) {
     const startX = e.clientX
     const startY = e.clientY
     const origLeft = addition.left
@@ -183,6 +224,82 @@ function onAdditionTextBlur(e, addition) {
 function onAdditionDelete(addition) {
     selectedAdditionId.value = null
     emit('remove-addition', props.pageNum, addition.id)
+}
+
+// ── Keyboard delete for selected additions ────────────────────────────────────
+function onGlobalKeydown(e) {
+    if (!selectedAdditionId.value) return
+    if (e.target.isContentEditable || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return
+    const addition = pageAdditions.value.find(a => a.id === selectedAdditionId.value)
+    if (!addition) return
+    e.preventDefault()
+    onAdditionDelete(addition)
+}
+
+// ── Resize (image / signature) ────────────────────────────────────────────────
+function onResizeMousedown(e, addition, dir) {
+    e.stopPropagation()
+    e.preventDefault()
+    selectedAdditionId.value = addition.id
+    const startX = e.clientX
+    const startY = e.clientY
+    const origLeft = addition.left
+    const origTop = addition.top
+    const origW = addition.width ?? 100
+    const origH = addition.height ?? 100
+
+    function onMove(ev) {
+        const dx = (ev.clientX - startX) / props.zoom
+        const dy = (ev.clientY - startY) / props.zoom
+        const changes = {}
+        if (dir.includes('e')) changes.width = Math.max(20, origW + dx)
+        if (dir.includes('s')) changes.height = Math.max(20, origH + dy)
+        if (dir.includes('w')) {
+            const w = Math.max(20, origW - dx)
+            changes.width = w
+            changes.left = origLeft + (origW - w)
+        }
+        if (dir.includes('n')) {
+            const h = Math.max(20, origH - dy)
+            changes.height = h
+            changes.top = origTop + (origH - h)
+        }
+        emit('update-addition', props.pageNum, addition.id, changes)
+    }
+    function onUp() {
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+}
+
+// ── Resize (text → drag bottom-right to change font-size) ──────────────────────
+function onTextResizeMousedown(e, addition) {
+    e.stopPropagation()
+    e.preventDefault()
+    selectedAdditionId.value = addition.id
+    const startY = e.clientY
+    const origSize = addition.fontSize
+    const minSize = Math.round(RENDER_SCALE * 6)   // ~6 pt minimum
+
+    function onMove(ev) {
+        const dy = (ev.clientY - startY) / props.zoom
+        const newSize = Math.max(minSize, Math.round(origSize + dy))
+        emit('update-addition', props.pageNum, addition.id, { fontSize: newSize })
+    }
+    function onUp() {
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+}
+
+// ── Deselect addition when clicking canvas background ─────────────────────
+function onCanvasClick() {
+    selectedAdditionId.value = null
 }
 
 // ── Edit handlers ─────────────────────────────────────────────────────────────
@@ -248,7 +365,7 @@ function onKeydown(e) {
         <!-- Zoom wrapper: overflow visible so caret is never clipped -->
         <div class="page-zoom-wrap" :style="{ zoom: zoom }">
             <!-- canvas-clip: clips only the PDF bitmap, not the text overlay -->
-            <div class="canvas-clip">
+            <div class="canvas-clip" @click="onCanvasClick">
                 <canvas ref="canvasRef" class="pdf-canvas"
                     :style="{ width: canvasW ? `${canvasW}px` : '794px', height: canvasH ? `${canvasH}px` : '1123px', display: 'block' }" />
 
@@ -274,13 +391,59 @@ function onKeydown(e) {
                         }" :style="{
                             left: `${item.left}px`,
                             top: `${item.top}px`,
-                            width: `${item.width}px`,
+                            width: 'fit-content',
                             minHeight: `${item.height}px`,
-                            fontSize: `${item.fontSize}px`,
+                            fontSize: `${activeItemId === item.id && activeItemFormat.fontSize ? activeItemFormat.fontSize : item.fontSize}px`,
                             lineHeight: `${item.height / Math.max(item.fontSize, 1)}`,
                         }" contenteditable="true" spellcheck="false" :data-id="item.id" @click.stop="onTextClick(item)"
                         @focus="onFocus(item)" @input="onInput(item, $event)" @blur="onBlur(item, $event)"
                         @keydown="onKeydown" />
+
+                    <!-- Format bar: shown when a text item is focused -->
+                    <Transition name="txt-fmt-pop">
+                        <div v-if="activeItemId && activeItem" class="text-item-format-bar"
+                            :style="{ left: `${activeItem.left}px`, top: `${Math.max(0, activeItem.top - 54)}px` }"
+                            @mousedown.prevent.stop @click.stop>
+                            <button class="fmt-btn" :class="{ active: activeItemFormat.bold }" title="Bold"
+                                @click="updateTextFormat({ bold: !activeItemFormat.bold })">
+                                <strong>B</strong>
+                            </button>
+                            <button class="fmt-btn fmt-italic" :class="{ active: activeItemFormat.italic }"
+                                title="Italic" @click="updateTextFormat({ italic: !activeItemFormat.italic })">
+                                <em>I</em>
+                            </button>
+                            <div class="fmt-sep"></div>
+                            <button class="fmt-btn fmt-step" title="Decrease size"
+                                @click="updateTextFormat({ fontSize: Math.max(Math.round(RENDER_SCALE * 4), (activeItemFormat.fontSize || activeItem.fontSize) - 2) })">&#8722;</button>
+                            <span class="fmt-size-val">{{ Math.round((activeItemFormat.fontSize || activeItem.fontSize) / RENDER_SCALE) }}pt</span>
+                            <button class="fmt-btn fmt-step" title="Increase size"
+                                @click="updateTextFormat({ fontSize: (activeItemFormat.fontSize || activeItem.fontSize) + 2 })">+</button>
+                            <div class="fmt-sep"></div>
+                            <select class="fmt-select" :value="activeItemFormat.fontFamily || ''"
+                                @change.stop="updateTextFormat({ fontFamily: $event.target.value || undefined })">
+                                <option value="">Original</option>
+                                <option value="Helvetica">Sans</option>
+                                <option value="TimesRoman">Serif</option>
+                                <option value="Courier">Mono</option>
+                            </select>
+                            <div class="fmt-sep"></div>
+                            <label class="fmt-color-wrap" title="Text color">
+                                <input type="color" class="fmt-color" :value="activeItemFormat.color || '#000000'"
+                                    @input.stop="updateTextFormat({ color: $event.target.value })" />
+                            </label>
+                            <div class="fmt-sep"></div>
+                            <button class="fmt-btn fmt-delete-btn" title="Discard edit for this item"
+                                @click="discardTextEdit(activeItem)">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2.5">
+                                    <polyline points="3 6 5 6 21 6" />
+                                    <path d="M19 6l-1 14H6L5 6" />
+                                    <path d="M10 11v6M14 11v6" />
+                                    <path d="M9 6V4h6v2" />
+                                </svg>
+                            </button>
+                        </div>
+                    </Transition>
                 </div>
             </Transition>
 
@@ -296,13 +459,104 @@ function onKeydown(e) {
                     }
                     : { left: `${addition.left}px`, top: `${addition.top}px` }"
                     @mousedown="onAdditionMousedown($event, addition)" @click.stop="selectedAdditionId = addition.id">
+
+                    <!-- Drag handle -->
+                    <div class="addition-drag-handle" @mousedown.stop="onDragHandleMousedown($event, addition)">
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                            <circle cx="5" cy="4" r="1.4" />
+                            <circle cx="11" cy="4" r="1.4" />
+                            <circle cx="5" cy="8" r="1.4" />
+                            <circle cx="11" cy="8" r="1.4" />
+                            <circle cx="5" cy="12" r="1.4" />
+                            <circle cx="11" cy="12" r="1.4" />
+                        </svg>
+                    </div>
+
+                    <!-- Format toolbar (text additions only, when selected) -->
+                    <Transition name="fmt-pop">
+                        <div v-if="addition.type === 'text' && selectedAdditionId === addition.id"
+                            class="addition-format-bar" @mousedown.stop @click.stop>
+                            <button class="fmt-btn" :class="{ active: addition.bold }" title="Bold (700)"
+                                @click.stop="emit('update-addition', pageNum, addition.id, { bold: !addition.bold })">
+                                <strong>B</strong>
+                            </button>
+                            <button class="fmt-btn fmt-italic" :class="{ active: addition.italic }" title="Italic"
+                                @click.stop="emit('update-addition', pageNum, addition.id, { italic: !addition.italic })">
+                                <em>I</em>
+                            </button>
+                            <div class="fmt-sep"></div>
+                            <button class="fmt-btn fmt-step" title="Decrease size"
+                                @click.stop="emit('update-addition', pageNum, addition.id, { fontSize: Math.max(Math.round(RENDER_SCALE * 6), addition.fontSize - 2) })">&#8722;</button>
+                            <span class="fmt-size-val">{{ Math.round(addition.fontSize / RENDER_SCALE) }}pt</span>
+                            <button class="fmt-btn fmt-step" title="Increase size"
+                                @click.stop="emit('update-addition', pageNum, addition.id, { fontSize: addition.fontSize + 2 })">+</button>
+                            <div class="fmt-sep"></div>
+                            <select class="fmt-select" :value="addition.fontFamily || 'Helvetica'"
+                                @change.stop="emit('update-addition', pageNum, addition.id, { fontFamily: $event.target.value })">
+                                <option value="Helvetica">Sans</option>
+                                <option value="TimesRoman">Serif</option>
+                                <option value="Courier">Mono</option>
+                            </select>
+                            <div class="fmt-sep"></div>
+                            <label class="fmt-color-wrap" title="Text color">
+                                <input type="color" class="fmt-color" :value="addition.color || '#1A3263'"
+                                    @input.stop="emit('update-addition', pageNum, addition.id, { color: $event.target.value })" />
+                            </label>
+                            <div class="fmt-sep"></div>
+                            <button class="fmt-btn fmt-delete-btn" title="Delete (Del)"
+                                @click.stop="onAdditionDelete(addition)">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2.5">
+                                    <polyline points="3 6 5 6 21 6" />
+                                    <path d="M19 6l-1 14H6L5 6" />
+                                    <path d="M10 11v6M14 11v6" />
+                                    <path d="M9 6V4h6v2" />
+                                </svg>
+                            </button>
+                        </div>
+                    </Transition>
+
                     <!-- Text content -->
                     <div v-if="addition.type === 'text'" :ref="el => setAdditionTextRef(el, addition)"
-                        class="addition-text-inner"
-                        :style="{ fontSize: `${addition.fontSize}px`, color: addition.color }" contenteditable="true"
-                        spellcheck="false" @mousedown.stop @blur="onAdditionTextBlur($event, addition)" @keydown.stop />
+                        class="addition-text-inner" :style="{
+                            fontSize: `${addition.fontSize}px`,
+                            color: addition.color,
+                            fontWeight: addition.bold ? '700' : '400',
+                            fontStyle: addition.italic ? 'italic' : 'normal',
+                            fontFamily: addition.fontFamily === 'TimesRoman' ? 'Georgia, serif'
+                                : addition.fontFamily === 'Courier' ? 'Courier New, monospace'
+                                    : 'system-ui, sans-serif',
+                        }" contenteditable="true" spellcheck="false" @mousedown.stop
+                        @blur="onAdditionTextBlur($event, addition)" @keydown.stop />
+
                     <!-- Image / signature -->
                     <img v-else :src="addition.dataUrl" class="addition-img" draggable="false" alt="" />
+
+                    <!-- 8-point resize handles (image / signature) -->
+                    <template v-if="selectedAdditionId === addition.id && addition.type !== 'text'">
+                        <div class="resize-handle rh-nw" @mousedown.stop="onResizeMousedown($event, addition, 'nw')">
+                        </div>
+                        <div class="resize-handle rh-n" @mousedown.stop="onResizeMousedown($event, addition, 'n')">
+                        </div>
+                        <div class="resize-handle rh-ne" @mousedown.stop="onResizeMousedown($event, addition, 'ne')">
+                        </div>
+                        <div class="resize-handle rh-e" @mousedown.stop="onResizeMousedown($event, addition, 'e')">
+                        </div>
+                        <div class="resize-handle rh-se" @mousedown.stop="onResizeMousedown($event, addition, 'se')">
+                        </div>
+                        <div class="resize-handle rh-s" @mousedown.stop="onResizeMousedown($event, addition, 's')">
+                        </div>
+                        <div class="resize-handle rh-sw" @mousedown.stop="onResizeMousedown($event, addition, 'sw')">
+                        </div>
+                        <div class="resize-handle rh-w" @mousedown.stop="onResizeMousedown($event, addition, 'w')">
+                        </div>
+                    </template>
+
+                    <!-- Font-size resize handle (text) -->
+                    <div v-if="selectedAdditionId === addition.id && addition.type === 'text'"
+                        class="text-resize-handle" title="Drag to resize text"
+                        @mousedown.stop="onTextResizeMousedown($event, addition)"></div>
+
                     <!-- Delete button -->
                     <button v-if="selectedAdditionId === addition.id" class="addition-delete-btn" title="Remove"
                         @click.stop="onAdditionDelete(addition)">
@@ -516,6 +770,36 @@ function onKeydown(e) {
     box-shadow: 0 0 0 2px var(--color-accent-glow);
 }
 
+/* ── Drag handle ── */
+.addition-drag-handle {
+    position: absolute;
+    top: -22px;
+    left: 50%;
+    transform: translateX(-50%);
+    height: 20px;
+    padding: 0 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-accent);
+    border-radius: 6px 6px 0 0;
+    color: #fff;
+    cursor: grab;
+    opacity: 0;
+    transition: opacity var(--transition-fast);
+    z-index: 20;
+    user-select: none;
+}
+
+.addition-drag-handle:active {
+    cursor: grabbing;
+}
+
+.addition-wrapper:hover .addition-drag-handle,
+.addition-wrapper.selected .addition-drag-handle {
+    opacity: 1;
+}
+
 .addition-text-inner {
     cursor: text;
     outline: none;
@@ -564,6 +848,16 @@ function onKeydown(e) {
     transform: scale(1.15);
 }
 
+/* delete button inside format toolbar */
+.fmt-delete-btn {
+    color: var(--color-danger) !important;
+}
+
+.fmt-delete-btn:hover {
+    background: rgba(217, 95, 95, 0.18) !important;
+    color: var(--color-danger) !important;
+}
+
 /* ── Page click layer (placement mode) ── */
 .page-click-layer {
     position: absolute;
@@ -575,5 +869,256 @@ function onKeydown(e) {
     border: 2px dashed rgba(84, 119, 146, 0.4);
     border-radius: var(--radius-sm);
     animation: borderPulse 1.6s ease-in-out infinite;
+}
+
+/* ── 8-point resize handles (image / signature) ── */
+.resize-handle {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    background: #fff;
+    border: 2px solid var(--color-accent);
+    border-radius: 2px;
+    z-index: 30;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+.rh-nw {
+    top: -5px;
+    left: -5px;
+    cursor: nw-resize;
+}
+
+.rh-n {
+    top: -5px;
+    left: calc(50% - 5px);
+    cursor: n-resize;
+}
+
+.rh-ne {
+    top: -5px;
+    right: -5px;
+    cursor: ne-resize;
+}
+
+.rh-e {
+    top: calc(50% - 5px);
+    right: -5px;
+    cursor: e-resize;
+}
+
+.rh-se {
+    bottom: -5px;
+    right: -5px;
+    cursor: se-resize;
+}
+
+.rh-s {
+    bottom: -5px;
+    left: calc(50% - 5px);
+    cursor: s-resize;
+}
+
+.rh-sw {
+    bottom: -5px;
+    left: -5px;
+    cursor: sw-resize;
+}
+
+.rh-w {
+    top: calc(50% - 5px);
+    left: -5px;
+    cursor: w-resize;
+}
+
+/* ── Text font-size resize handle (bottom-right corner) ── */
+.text-resize-handle {
+    position: absolute;
+    bottom: -5px;
+    right: -5px;
+    width: 10px;
+    height: 10px;
+    background: var(--color-accent);
+    border-radius: 2px;
+    cursor: se-resize;
+    z-index: 30;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+    opacity: 0.85;
+}
+
+.text-resize-handle:hover {
+    opacity: 1;
+    transform: scale(1.2);
+}
+
+/* ── Format toolbar (text additions) ── */
+.addition-format-bar {
+    position: absolute;
+    top: -58px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px 7px;
+    background: var(--color-sidebar);
+    border-radius: var(--radius-md);
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.36), 0 0 0 1px rgba(255, 255, 255, 0.09);
+    white-space: nowrap;
+    z-index: 40;
+    user-select: none;
+}
+
+/* ── Format toolbar (existing text items) ── */
+.text-item-format-bar {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px 7px;
+    background: var(--color-sidebar);
+    border-radius: var(--radius-md);
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.36), 0 0 0 1px rgba(255, 255, 255, 0.09);
+    white-space: nowrap;
+    z-index: 50;
+    user-select: none;
+    pointer-events: all;
+}
+
+.fmt-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    height: 24px;
+    padding: 0 5px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    color: var(--color-text-sidebar);
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.fmt-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+}
+
+.fmt-btn.active {
+    background: var(--color-accent);
+    color: #fff;
+}
+
+.fmt-btn strong {
+    font-weight: 900;
+    font-size: 0.85rem;
+    line-height: 1;
+}
+
+.fmt-btn.fmt-italic em {
+    font-style: italic;
+    font-size: 0.85rem;
+}
+
+.fmt-step {
+    font-size: 1rem;
+    font-weight: 500;
+    line-height: 1;
+}
+
+.fmt-size-val {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--color-text-sidebar);
+    min-width: 34px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.fmt-sep {
+    width: 1px;
+    height: 16px;
+    background: rgba(255, 255, 255, 0.15);
+    margin: 0 3px;
+    flex-shrink: 0;
+}
+
+.fmt-select {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--color-text-sidebar);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    padding: 2px 4px;
+    cursor: pointer;
+    height: 24px;
+    outline: none;
+}
+
+.fmt-select:focus {
+    border-color: var(--color-accent);
+}
+
+.fmt-select option {
+    background: #1e293b;
+    color: #fff;
+}
+
+.fmt-color-wrap {
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+}
+
+.fmt-color {
+    width: 24px;
+    height: 24px;
+    border: none;
+    border-radius: 4px;
+    padding: 1px;
+    cursor: pointer;
+    background: transparent;
+}
+
+/* format bar pop transition */
+.fmt-pop-enter-active {
+    animation: fmtIn 0.15s ease both;
+}
+
+.fmt-pop-leave-active {
+    animation: fmtIn 0.1s ease reverse;
+}
+
+@keyframes fmtIn {
+    from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(4px) scale(0.95);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0) scale(1);
+    }
+}
+
+/* text item format bar pop (no translateX centering) */
+.txt-fmt-pop-enter-active {
+    animation: txtFmtIn 0.15s ease both;
+}
+
+.txt-fmt-pop-leave-active {
+    animation: txtFmtIn 0.1s ease reverse;
+}
+
+@keyframes txtFmtIn {
+    from {
+        opacity: 0;
+        transform: translateY(4px) scale(0.97);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
 }
 </style>

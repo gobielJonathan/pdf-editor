@@ -28,6 +28,7 @@ const {
   applyEdits,
   addBlankPage,
   loadAllTextContent,
+  recordTextFormat,
 } = usePdfDocument()
 
 // ── State ──────────────────────────────────────────────────────────────────────
@@ -123,7 +124,7 @@ function closeEditor() {
           :export-fn="exportPdf" :has-edits="hasEdits" :file-name="fileName" :record-addition-fn="recordAddition"
           :remove-addition-fn="removeAddition" :update-addition-fn="updateAddition" :clear-edits-fn="clearAllEdits"
           :apply-edits-fn="applyEdits" :add-blank-page-fn="addBlankPage" :load-all-text-content-fn="loadAllTextContent"
-          @close="closeEditor" @edit="onEdit" />
+          :record-text-format-fn="recordTextFormat" @close="closeEditor" @edit="onEdit" />
       </div>
 
     </Transition>

@@ -261,6 +261,10 @@ export function usePdfDocument() {
     const slot = pages.get(pageNum)
     if (!slot) return
     if (!slot.formats) slot.formats = new Map()
+    if (format === null || format === undefined) {
+      slot.formats.delete(itemId)
+      return
+    }
     slot.formats.set(itemId, { ...format })
     // Ensure applyEdits will redraw this item even if text hasn't changed
     if (!slot.edits.has(itemId)) {
@@ -273,7 +277,7 @@ export function usePdfDocument() {
   async function embedAllFonts(doc) {
     const [
       Helvetica, HelveticaBold, HelveticaOblique, HelveticaBoldOblique,
-      TimesRoman,
+      TimesRoman, TimesRomanBold, TimesRomanItalic, TimesRomanBoldItalic,
       Courier, CourierBold, CourierOblique, CourierBoldOblique,
     ] = await Promise.all([
       doc.embedFont(StandardFonts.Helvetica),
@@ -281,22 +285,37 @@ export function usePdfDocument() {
       doc.embedFont(StandardFonts.HelveticaOblique),
       doc.embedFont(StandardFonts.HelveticaBoldOblique),
       doc.embedFont(StandardFonts.TimesRoman),
+      doc.embedFont(StandardFonts.TimesRomanBold),
+      doc.embedFont(StandardFonts.TimesRomanItalic),
+      doc.embedFont(StandardFonts.TimesRomanBoldItalic),
       doc.embedFont(StandardFonts.Courier),
       doc.embedFont(StandardFonts.CourierBold),
       doc.embedFont(StandardFonts.CourierOblique),
       doc.embedFont(StandardFonts.CourierBoldOblique),
     ])
     return { Helvetica, HelveticaBold, HelveticaOblique, HelveticaBoldOblique,
-             TimesRoman,
+             TimesRoman, TimesRomanBold, TimesRomanItalic, TimesRomanBoldItalic,
              Courier, CourierBold, CourierOblique, CourierBoldOblique }
+  }
+
+  function hexToRgb(hex) {
+    const h = (hex || '#000000').replace('#', '')
+    const r = parseInt(h.substring(0, 2), 16) / 255
+    const g = parseInt(h.substring(2, 4), 16) / 255
+    const b = parseInt(h.substring(4, 6), 16) / 255
+    return rgb(
+      isNaN(r) ? 0 : r,
+      isNaN(g) ? 0 : g,
+      isNaN(b) ? 0 : b,
+    )
   }
 
   function pickFont(fonts, fontFamily, bold, italic) {
     const fam = fontFamily || 'Helvetica'
     if (fam === 'TimesRoman') {
-      if (bold && italic) return fonts.TimesBoldItalic
-      if (bold)           return fonts.TimesBold
-      if (italic)         return fonts.TimesItalic
+      if (bold && italic) return fonts.TimesRomanBoldItalic
+      if (bold)           return fonts.TimesRomanBold
+      if (italic)         return fonts.TimesRomanItalic
       return fonts.TimesRoman
     }
     if (fam === 'Courier') {
@@ -357,7 +376,7 @@ export function usePdfDocument() {
         if (newText.trim()) {
           libPage.drawText(newText, {
             x: item.pdfX, y: item.pdfY,
-            size: fs, font, color: rgb(0, 0, 0),
+            size: fs, font, color: hexToRgb(fmt.color),
             maxWidth: item.pdfWidth * 2,
           })
           if (fmt.underline) drawUnderline(libPage, item.pdfX, item.pdfY, newText, font, fs)
@@ -375,7 +394,7 @@ export function usePdfDocument() {
           const pdfY = pageH - addition.top / scale - fs * 1.1
           libPage.drawText(addition.text, {
             x: Math.max(pdfX, 0), y: Math.max(pdfY, 0),
-            size: fs, font: addFont, color: rgb(0, 0, 0),
+            size: fs, font: addFont, color: hexToRgb(addition.color),
           })
           if (addition.underline) drawUnderline(libPage, Math.max(pdfX, 0), Math.max(pdfY, 0), addition.text, addFont, fs)
         } else if ((addition.type === 'image' || addition.type === 'signature') && addition.dataUrl) {
@@ -458,7 +477,7 @@ export function usePdfDocument() {
             y:        item.pdfY,
             size:     fs,
             font,
-            color:    rgb(0, 0, 0),
+            color:    hexToRgb(fmt.color),
             maxWidth: item.pdfWidth * 2,
           })
           if (fmt.underline) drawUnderline(libPage, item.pdfX, item.pdfY, newText, font, fs)
@@ -480,7 +499,7 @@ export function usePdfDocument() {
             y:    Math.max(pdfY, 0),
             size: fs,
             font: addFont,
-            color: rgb(0, 0, 0),
+            color: hexToRgb(addition.color),
           })
           if (addition.underline) drawUnderline(libPage, Math.max(pdfX, 0), Math.max(pdfY, 0), addition.text, addFont, fs)
 
