@@ -17,6 +17,8 @@ const props = defineProps({
     isActive: { type: Boolean, default: false },
     activeTool: { type: String, default: null },   // 'text' | 'image' | 'signature' | null
     pendingDataUrl: { type: String, default: null }, // data URL for image/signature placement
+    searchMatchIds: { type: Object, default: () => new Set() },   // Set<itemId>
+    searchCurrentId: { type: String, default: null },             // currently focused match
 })
 
 const emit = defineEmits(['edit', 'rendered', 'add-element', 'update-addition', 'remove-addition', 'text-focus', 'text-blur'])
@@ -267,6 +269,8 @@ function onKeydown(e) {
                         :class="{
                             active: activeItemId === item.id,
                             edited: isEdited(item),
+                            'search-match': searchMatchIds.has(item.id) && searchCurrentId !== item.id,
+                            'search-match-current': searchCurrentId === item.id,
                         }" :style="{
                             left: `${item.left}px`,
                             top: `${item.top}px`,
@@ -456,6 +460,22 @@ function onKeydown(e) {
 .text-item.edited:not(:focus):not(.active) {
     background: rgba(255, 197, 112, 0.12);
     box-shadow: 0 0 0 1.5px rgba(255, 197, 112, 0.5);
+}
+
+/* Search highlights */
+.text-item.search-match {
+    background: rgba(255, 230, 40, 0.38) !important;
+    box-shadow: 0 0 0 1.5px rgba(220, 180, 0, 0.55) !important;
+    color: #1a1a1a !important;
+    border-radius: 3px;
+}
+
+.text-item.search-match-current {
+    background: rgba(255, 170, 0, 0.65) !important;
+    box-shadow: 0 0 0 2px rgba(220, 140, 0, 0.85) !important;
+    color: #1a1a1a !important;
+    border-radius: 3px;
+    z-index: 50;
 }
 
 /* ── Fade transition ── */

@@ -198,6 +198,60 @@ export function usePdfDocument() {
     }
   }
 
+  // ── addBlankPage ─────────────────────────────────────────────────────────────
+  /**
+   * Inserts a blank page after `afterPageNum` (1-based).
+   * Re-loads pdfjs from the updated bytes and rebuilds page slots.
+   */
+  async function addBlankPage(afterPageNum) {
+    if (!rawBytes.value) throw new Error('No PDF loaded')
+
+    const pdfLibDoc = await PDFDocument.load(rawBytes.value.slice())
+    const existingPages = pdfLibDoc.getPages()
+    const refPage = existingPages[Math.min(afterPageNum, existingPages.length) - 1]
+    const { width, height } = refPage.getSize()
+
+    // insertPage is 0-based; insert after afterPageNum means index = afterPageNum
+    pdfLibDoc.insertPage(afterPageNum, [width, height])
+
+    const newBytes = await pdfLibDoc.save()
+    rawBytes.value = newBytes.slice()
+    pdfDoc.value = await pdfjsLib.getDocument({ data: new Uint8Array(newBytes) }).promise
+    pageCount.value = pdfDoc.value.numPages
+
+    // Rebuild slots: shift pages after insertion point up by one
+    const rebuilt = new Map()
+    for (let p = 1; p <= pageCount.value; p++) {
+      if (p <= afterPageNum) {
+        rebuilt.set(p, pages.get(p) ?? { rendered: false, textItems: [], edits: new Map(), additions: [], formats: new Map() })
+      } else if (p === afterPageNum + 1) {
+        rebuilt.set(p, { rendered: false, textItems: [], edits: new Map(), additions: [], formats: new Map() })
+      } else {
+        rebuilt.set(p, pages.get(p - 1) ?? { rendered: false, textItems: [], edits: new Map(), additions: [], formats: new Map() })
+      }
+    }
+    pages.clear()
+    for (const [k, v] of rebuilt) pages.set(k, v)
+  }
+
+  // ── loadAllTextContent ────────────────────────────────────────────────────────
+  /**
+   * Eagerly extracts text items for every page (without canvas render).
+   * Used by the search feature so all pages are searchable even if not yet visible.
+   */
+  async function loadAllTextContent() {
+    if (!pdfDoc.value) return
+    for (let p = 1; p <= pageCount.value; p++) {
+      const slot = pages.get(p)
+      if (!slot || slot.textItems.length > 0) continue   // already populated
+      const page     = await pdfDoc.value.getPage(p)
+      const viewport = page.getViewport({ scale: RENDER_SCALE })
+      const content  = await page.getTextContent()
+      slot.textItems = buildTextItems(content.items, viewport)
+      if (!slot.viewport) slot.viewport = viewport
+    }
+  }
+
   // ── recordTextFormat ────────────────────────────────────────────────────────
   /**
    * Records bold/italic/underline/fontFamily for an existing PDF text item.
@@ -496,5 +550,7 @@ export function usePdfDocument() {
     removeAddition,
     updateAddition,
     clearAllEdits,
+    addBlankPage,
+    loadAllTextContent,
   }
 }

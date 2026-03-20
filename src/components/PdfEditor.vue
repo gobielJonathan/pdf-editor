@@ -23,6 +23,8 @@ const props = defineProps({
     updateAdditionFn: { type: Function, required: true },
     clearEditsFn: { type: Function, required: true },
     applyEditsFn: { type: Function, required: true },
+    addBlankPageFn: { type: Function, required: true },
+    loadAllTextContentFn: { type: Function, required: true },
 })
 
 const emit = defineEmits(['close', 'edit'])
@@ -141,6 +143,7 @@ function onKeydown(e) {
     if ((e.ctrlKey || e.metaKey) && e.key === '0') { e.preventDefault(); zoomReset() }
     if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); handleSave() }
     if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'e')) { e.preventDefault(); handleExport() }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'f') { e.preventDefault(); showSearch.value ? closeSearch() : openSearch() }
     if (e.key === 'e' && !e.ctrlKey && !e.metaKey) editMode.value = !editMode.value
     if (e.key === 'Escape') exitTool()
 }
@@ -258,10 +261,122 @@ function cancelEdits() {
     exitTool()
     info('All changes discarded.')
 }
+
+// ─── Add blank page ───────────────────────────────────────────────────────────
+const isAddingPage = ref(false)
+
+async function handleAddPage() {
+    if (isAddingPage.value) return
+    isAddingPage.value = true
+    try {
+        const insertAfter = activePage.value
+        await props.addBlankPageFn(insertAfter)
+        // Force all pages to remount so shifted pages re-render with new page numbers
+        resetKey.value++
+        thumbnails.clear()
+        for (let p = 1; p <= props.pageCount; p++) {
+            await generateThumbnail(p)
+        }
+        await nextTick()
+        goToPage(insertAfter + 1)
+        success('Blank page added.')
+    } catch (err) {
+        console.error(err)
+        error('Could not add page. Please try again.')
+    } finally {
+        isAddingPage.value = false
+    }
+}
+
+// ─── Search ───────────────────────────────────────────────────────────────────
+const showSearch = ref(false)
+const searchQuery = ref('')
+const searchResults = ref([])   // [{ pageNum, itemId }]
+const searchIndex = ref(-1)
+const isLoadingSearch = ref(false)
+const searchInputRef = ref(null)
+
+const searchCurrentMatch = computed(() => searchResults.value[searchIndex.value] ?? null)
+
+function searchMatchIdsForPage(pageNum) {
+    const ids = new Set()
+    for (const r of searchResults.value) {
+        if (r.pageNum === pageNum) ids.add(r.itemId)
+    }
+    return ids
+}
+
+function searchCurrentIdForPage(pageNum) {
+    const cur = searchCurrentMatch.value
+    return cur?.pageNum === pageNum ? cur.itemId : null
+}
+
+async function openSearch() {
+    showSearch.value = true
+    isLoadingSearch.value = true
+    await props.loadAllTextContentFn()
+    isLoadingSearch.value = false
+    await nextTick()
+    searchInputRef.value?.focus()
+}
+
+function closeSearch() {
+    showSearch.value = false
+    searchQuery.value = ''
+    searchResults.value = []
+    searchIndex.value = -1
+}
+
+watch(searchQuery, (q) => {
+    const trimmed = q.trim().toLowerCase()
+    if (!trimmed) {
+        searchResults.value = []
+        searchIndex.value = -1
+        return
+    }
+    const results = []
+    for (let p = 1; p <= props.pageCount; p++) {
+        const slot = props.pages.get(p)
+        if (!slot) continue
+        for (const item of slot.textItems) {
+            if (item.str.toLowerCase().includes(trimmed)) {
+                results.push({ pageNum: p, itemId: item.id })
+            }
+        }
+    }
+    searchResults.value = results
+    searchIndex.value = results.length > 0 ? 0 : -1
+    if (results.length > 0) jumpToMatch(0)
+})
+
+function jumpToMatch(idx) {
+    const match = searchResults.value[idx]
+    if (!match) return
+    goToPage(match.pageNum)
+}
+
+function searchNext() {
+    if (!searchResults.value.length) return
+    const next = (searchIndex.value + 1) % searchResults.value.length
+    searchIndex.value = next
+    jumpToMatch(next)
+}
+
+function searchPrev() {
+    if (!searchResults.value.length) return
+    const prev = (searchIndex.value - 1 + searchResults.value.length) % searchResults.value.length
+    searchIndex.value = prev
+    jumpToMatch(prev)
+}
+
+function onSearchKeydown(e) {
+    if (e.key === 'Enter') { e.shiftKey ? searchPrev() : searchNext() }
+    if (e.key === 'Escape') closeSearch()
+}
 </script>
 
 <template>
-    <div class="editor-root" tabindex="-1" @keydown.exact="onKeydown">
+    <div class="editor-root" tabindex="-1" @keydown="onKeydown">
 
         <!-- ── Sidebar (page thumbnails) ── -->
         <Transition name="sidebar-slide">
@@ -395,6 +510,31 @@ function cancelEdits() {
                         </button>
                     </div>
 
+                    <!-- Add Page -->
+                    <button class="toolbar-btn" :class="{ loading: isAddingPage }" :disabled="isAddingPage"
+                        title="Add blank page after current page" @click="handleAddPage">
+                        <span v-if="isAddingPage" class="spinner" aria-hidden="true" />
+                        <svg v-else width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                            <polyline points="14 2 14 8 20 8" />
+                            <line x1="12" y1="13" x2="12" y2="19" />
+                            <line x1="9" y1="16" x2="15" y2="16" />
+                        </svg>
+                        <span>Add Page</span>
+                    </button>
+
+                    <!-- Search -->
+                    <button class="toolbar-btn" :class="{ active: showSearch }" title="Search text (Ctrl/⌘F)"
+                        @click="showSearch ? closeSearch() : openSearch()">
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <circle cx="11" cy="11" r="8" />
+                            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                        </svg>
+                        <span>Search</span>
+                    </button>
+
                     <!-- Edit toggle -->
                     <button class="toolbar-btn pill" :class="{ 'active-edit': editMode }" title="Toggle edit mode (E)"
                         @click="editMode = !editMode">
@@ -469,12 +609,53 @@ function cancelEdits() {
                 </div>
             </Transition>
 
+            <!-- ── Search bar ── -->
+            <Transition name="fade-fast">
+                <div v-if="showSearch" class="search-bar">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        class="search-icon">
+                        <circle cx="11" cy="11" r="8" />
+                        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                    <input ref="searchInputRef" v-model="searchQuery" class="search-input"
+                        placeholder="Search text… (Enter ↓  Shift+Enter ↑)" @keydown="onSearchKeydown" />
+                    <span v-if="isLoadingSearch" class="search-status">Loading…</span>
+                    <span v-else-if="searchQuery.trim() && searchResults.length === 0"
+                        class="search-status search-no-result">No results</span>
+                    <span v-else-if="searchResults.length > 0" class="search-status">
+                        {{ searchIndex + 1 }} / {{ searchResults.length }}
+                    </span>
+                    <button class="search-nav-btn" title="Previous (Shift+Enter)" :disabled="searchResults.length === 0"
+                        @click="searchPrev">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2.5">
+                            <polyline points="15 18 9 12 15 6" />
+                        </svg>
+                    </button>
+                    <button class="search-nav-btn" title="Next (Enter)" :disabled="searchResults.length === 0"
+                        @click="searchNext">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2.5">
+                            <polyline points="9 18 15 12 9 6" />
+                        </svg>
+                    </button>
+                    <button class="search-close-btn" title="Close search (Esc)" @click="closeSearch">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2.5">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
+                </div>
+            </Transition>
+
             <!-- ── Pages scroll area ── -->
             <div ref="pagesRef" class="pages-scroll" @scroll.passive="() => { }">
                 <div class="pages-column">
                     <div v-for="n in pageNums" :key="`${n}-${resetKey}`" :data-page="n" class="page-wrapper">
                         <PdfPage :page-num="n" :render-fn="renderFn" :pages="pages" :zoom="zoom" :edit-mode="editMode"
                             :is-active="activePage === n" :active-tool="activeTool" :pending-data-url="pendingDataUrl"
+                            :search-match-ids="searchMatchIdsForPage(n)" :search-current-id="searchCurrentIdForPage(n)"
                             @edit="handleEdit" @rendered="handleRendered" @add-element="onAddElement"
                             @update-addition="onUpdateAddition" @remove-addition="onRemoveAddition"
                             @text-focus="handleTextFocus" @text-blur="handleTextBlur" />
@@ -1195,5 +1376,91 @@ kbd {
         opacity: 0;
         transform: translateX(-50%) translateY(16px) scale(0.95);
     }
+}
+
+/* ── Search bar ── */
+.search-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 16px;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+    flex-shrink: 0;
+    animation: fadeInDown 0.15s ease;
+}
+
+.search-icon {
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+}
+
+.search-input {
+    flex: 1;
+    max-width: 340px;
+    padding: 5px 10px;
+    border-radius: var(--radius-md);
+    border: 1.5px solid var(--color-border);
+    background: var(--color-bg);
+    color: var(--color-text);
+    font-size: 0.84rem;
+    outline: none;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.search-input:focus {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-glow);
+}
+
+.search-status {
+    font-size: 0.76rem;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    min-width: 52px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.search-no-result {
+    color: var(--color-danger);
+}
+
+.search-nav-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm);
+    color: var(--color-text-soft);
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.search-nav-btn:hover:not(:disabled) {
+    background: var(--color-accent-light);
+    color: var(--color-accent);
+}
+
+.search-nav-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.search-close-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    margin-left: 2px;
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.search-close-btn:hover {
+    background: rgba(217, 95, 95, 0.1);
+    color: var(--color-danger);
 }
 </style>

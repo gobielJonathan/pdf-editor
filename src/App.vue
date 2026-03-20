@@ -26,6 +26,8 @@ const {
   updateAddition,
   clearAllEdits,
   applyEdits,
+  addBlankPage,
+  loadAllTextContent,
 } = usePdfDocument()
 
 // ── State ──────────────────────────────────────────────────────────────────────
@@ -120,7 +122,8 @@ function closeEditor() {
         <PdfEditor :page-count="pageCount" :pages="pages" :render-fn="renderPage" :thumb-fn="renderThumbnail"
           :export-fn="exportPdf" :has-edits="hasEdits" :file-name="fileName" :record-addition-fn="recordAddition"
           :remove-addition-fn="removeAddition" :update-addition-fn="updateAddition" :clear-edits-fn="clearAllEdits"
-          :apply-edits-fn="applyEdits" @close="closeEditor" @edit="onEdit" />
+          :apply-edits-fn="applyEdits" :add-blank-page-fn="addBlankPage" :load-all-text-content-fn="loadAllTextContent"
+          @close="closeEditor" @edit="onEdit" />
       </div>
 
     </Transition>
