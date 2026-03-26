@@ -415,7 +415,8 @@ function onKeydown(e) {
                             <div class="fmt-sep"></div>
                             <button class="fmt-btn fmt-step" title="Decrease size"
                                 @click="updateTextFormat({ fontSize: Math.max(Math.round(RENDER_SCALE * 4), (activeItemFormat.fontSize || activeItem.fontSize) - 2) })">&#8722;</button>
-                            <span class="fmt-size-val">{{ Math.round((activeItemFormat.fontSize || activeItem.fontSize) / RENDER_SCALE) }}pt</span>
+                            <span class="fmt-size-val">{{ Math.round((activeItemFormat.fontSize || activeItem.fontSize)
+                                / RENDER_SCALE) }}pt</span>
                             <button class="fmt-btn fmt-step" title="Increase size"
                                 @click="updateTextFormat({ fontSize: (activeItemFormat.fontSize || activeItem.fontSize) + 2 })">+</button>
                             <div class="fmt-sep"></div>
