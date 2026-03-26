@@ -30,6 +30,7 @@
     "npm-run-all2": "^8.0.4",
     "oxfmt": "^0.35.0",
     "oxlint": "~1.50.0",
+    "sharp": "^0.34.5",
     "vite": "^7.3.1",
     "vite-plugin-static-copy": "^3.3.0",
     "vite-plugin-vue-devtools": "^8.0.6"

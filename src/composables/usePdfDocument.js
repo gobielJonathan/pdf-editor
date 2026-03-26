@@ -48,7 +48,7 @@ export function usePdfDocument() {
 
       // Pre-populate page slots
       for (let p = 1; p <= pageCount.value; p++) {
-        pages.set(p, { rendered: false, textItems: [], edits: new Map(), additions: [], formats: new Map() })
+        pages.set(p, { rendered: false, textItems: [], paragraphs: [], edits: new Map(), additions: [], formats: new Map() })
       }
     } catch (err) {
       loadError.value = err.message || 'Failed to load PDF'
@@ -84,15 +84,85 @@ export function usePdfDocument() {
     const textItems = buildTextItems(content.items, viewport)
 
     // Cache
-    const slot = pages.get(pageNum) || { rendered: false, textItems: [], edits: new Map(), additions: [], formats: new Map() }
+    const slot = pages.get(pageNum) || { rendered: false, textItems: [], paragraphs: [], edits: new Map(), additions: [], formats: new Map() }
     slot.rendered   = true
     slot.viewport   = viewport
     slot.pageWidth  = page.view[2]   // in user units (points)
     slot.pageHeight = page.view[3]
     slot.textItems  = textItems
+    slot.paragraphs = buildParagraphs(textItems)
     pages.set(pageNum, slot)
 
     return textItems
+  }
+
+  // ── buildParagraphs ─────────────────────────────────────────────────────────
+  /**
+   * Groups text items into paragraph blocks for paragraph-level editing.
+   * Two passes: (1) cluster items on the same line, (2) merge consecutive
+   * lines whose left edges are close and whose vertical gap is small.
+   */
+  function buildParagraphs(items) {
+    if (!items.length) return []
+
+    // Sort by top then left
+    const sorted = [...items].sort((a, b) => a.top !== b.top ? a.top - b.top : a.left - b.left)
+
+    // Pass 1 — group into lines
+    const lines = []
+    for (const item of sorted) {
+      const threshold = item.height * 0.55
+      const last = lines[lines.length - 1]
+      if (last && Math.abs(item.top - last.top) < threshold) {
+        last.items.push(item)
+      } else {
+        lines.push({ top: item.top, items: [item] })
+      }
+    }
+
+    // Pass 2 — merge consecutive lines into paragraphs
+    const paragraphs = []
+    for (const line of lines) {
+      line.items.sort((a, b) => a.left - b.left)
+      const lineLeft   = Math.min(...line.items.map(i => i.left))
+      const lineRight  = Math.max(...line.items.map(i => i.left + i.width))
+      const lineTop    = Math.min(...line.items.map(i => i.top))
+      const lineBottom = Math.max(...line.items.map(i => i.top + i.height))
+      const lineFs     = line.items.reduce((m, i) => Math.max(m, i.fontSize), 0)
+
+      const last     = paragraphs[paragraphs.length - 1]
+      const gapOk    = last && (lineTop - last.bottom) < lineFs * 2.2
+      const leftOk   = last && Math.abs(lineLeft - last.left) < lineFs * 4
+
+      if (gapOk && leftOk) {
+        last.items.push(...line.items)
+        last.bottom    = lineBottom
+        last.right     = Math.max(last.right, lineRight)
+        last.width     = last.right  - last.left
+        last.height    = last.bottom - last.top
+      } else {
+        paragraphs.push({
+          id:          `para-${paragraphs.length}`,
+          items:       [...line.items],
+          left:        lineLeft,
+          top:         lineTop,
+          right:       lineRight,
+          bottom:      lineBottom,
+          width:       lineRight  - lineLeft,
+          height:      lineBottom - lineTop,
+          fontSize:    lineFs,
+          fontName:    line.items[0].fontName ?? '',
+          pdfFontSize: line.items[0].pdfFontSize,
+        })
+      }
+    }
+
+    // Compute joined display text for each paragraph
+    for (const para of paragraphs) {
+      para.str = para.items.map(i => i.str).join(' ').replace(/  +/g, ' ').trim()
+    }
+
+    return paragraphs
   }
 
   // ── buildTextItems ──────────────────────────────────────────────────────────
@@ -160,8 +230,13 @@ export function usePdfDocument() {
 
   function hasEdits() {
     for (const slot of pages.values()) {
-      if (slot.edits?.size > 0) return true
       if (slot.additions?.length > 0) return true
+      // count a non-empty edit only (erasure markers are '' and paired with an addition above)
+      if (slot.edits) {
+        for (const v of slot.edits.values()) {
+          if (v !== '') return true
+        }
+      }
       if (slot.formats?.size > 0) return true
     }
     return false
@@ -223,11 +298,11 @@ export function usePdfDocument() {
     const rebuilt = new Map()
     for (let p = 1; p <= pageCount.value; p++) {
       if (p <= afterPageNum) {
-        rebuilt.set(p, pages.get(p) ?? { rendered: false, textItems: [], edits: new Map(), additions: [], formats: new Map() })
+        rebuilt.set(p, pages.get(p) ?? { rendered: false, textItems: [], paragraphs: [], edits: new Map(), additions: [], formats: new Map() })
       } else if (p === afterPageNum + 1) {
-        rebuilt.set(p, { rendered: false, textItems: [], edits: new Map(), additions: [], formats: new Map() })
+        rebuilt.set(p, { rendered: false, textItems: [], paragraphs: [], edits: new Map(), additions: [], formats: new Map() })
       } else {
-        rebuilt.set(p, pages.get(p - 1) ?? { rendered: false, textItems: [], edits: new Map(), additions: [], formats: new Map() })
+        rebuilt.set(p, pages.get(p - 1) ?? { rendered: false, textItems: [], paragraphs: [], edits: new Map(), additions: [], formats: new Map() })
       }
     }
     pages.clear()
@@ -247,7 +322,8 @@ export function usePdfDocument() {
       const page     = await pdfDoc.value.getPage(p)
       const viewport = page.getViewport({ scale: RENDER_SCALE })
       const content  = await page.getTextContent()
-      slot.textItems = buildTextItems(content.items, viewport)
+      slot.textItems  = buildTextItems(content.items, viewport)
+      slot.paragraphs = buildParagraphs(slot.textItems)
       if (!slot.viewport) slot.viewport = viewport
     }
   }
@@ -266,10 +342,15 @@ export function usePdfDocument() {
       return
     }
     slot.formats.set(itemId, { ...format })
-    // Ensure applyEdits will redraw this item even if text hasn't changed
+    // Ensure applyEdits will redraw this item/paragraph even if text hasn't changed
     if (!slot.edits.has(itemId)) {
-      const item = slot.textItems.find(t => t.id === itemId)
-      if (item) slot.edits.set(itemId, item.str)
+      if (itemId.startsWith('para-')) {
+        const para = slot.paragraphs?.find(p => p.id === itemId)
+        if (para) slot.edits.set(itemId, para.str)
+      } else {
+        const item = slot.textItems.find(t => t.id === itemId)
+        if (item) slot.edits.set(itemId, item.str)
+      }
     }
   }
 
@@ -363,14 +444,17 @@ export function usePdfDocument() {
 
       for (const item of slot.textItems) {
         if (!slot.edits.has(item.id)) continue
+        if (item.id.startsWith('para-')) continue   // handled below
         const newText = slot.edits.get(item.id)
         const fmt  = slot.formats?.get(item.id) ?? {}
         const font = pickFont(fonts, fmt.fontFamily, fmt.bold, fmt.italic)
-        const fs   = Math.min(Math.max(item.pdfFontSize, 5), 72)
-
+        const origFs = Math.min(Math.max(item.pdfFontSize, 5), 72)
+        const fs = fmt.fontSize && item.fontSize
+          ? Math.min(Math.max((fmt.fontSize / item.fontSize) * origFs, 3), 144)
+          : origFs
         libPage.drawRectangle({
-          x: item.pdfX - 1, y: item.pdfY - fs * 0.2,
-          width: item.pdfWidth + 2, height: fs * 1.3,
+          x: item.pdfX - 1, y: item.pdfY - origFs * 0.2,
+          width: item.pdfWidth + 2, height: origFs * 1.5,
           color: rgb(1, 1, 1), opacity: 1,
         })
         if (newText.trim()) {
@@ -380,6 +464,43 @@ export function usePdfDocument() {
             maxWidth: item.pdfWidth * 2,
           })
           if (fmt.underline) drawUnderline(libPage, item.pdfX, item.pdfY, newText, font, fs)
+        }
+      }
+
+      // ── Paragraph edits (text / format / position changes) ──
+      for (const [editId, newText] of slot.edits.entries()) {
+        if (!editId.startsWith('para-')) continue
+        const para = slot.paragraphs?.find(p => p.id === editId)
+        if (!para || !para.items.length) continue
+        const fmt   = slot.formats?.get(editId) ?? {}
+        const font  = pickFont(fonts, fmt.fontFamily, fmt.bold, fmt.italic)
+        const baseFs = Math.min(Math.max(para.pdfFontSize, 5), 72)
+        const fs = fmt.fontSize && para.fontSize
+          ? Math.min(Math.max((fmt.fontSize / para.fontSize) * baseFs, 3), 144)
+          : baseFs
+        const color = fmt.color ? hexToRgb(fmt.color) : rgb(0, 0, 0)
+        // Erase original bounding box
+        const origMinX = Math.min(...para.items.map(i => i.pdfX)) - 2
+        const origMaxX = Math.max(...para.items.map(i => i.pdfX + i.pdfWidth)) + 4
+        const origMinY = Math.min(...para.items.map(i => i.pdfY)) - baseFs * 0.3
+        const origMaxY = Math.max(...para.items.map(i => i.pdfY + i.pdfFontSize * 1.2)) + baseFs * 0.2
+        libPage.drawRectangle({ x: origMinX, y: origMinY, width: origMaxX - origMinX, height: origMaxY - origMinY, color: rgb(1, 1, 1), opacity: 1 })
+        // Draw at overridden position if para was moved
+        const scale  = slot.viewport?.scale ?? RENDER_SCALE
+        const drawX  = fmt.left != null
+          ? fmt.left / scale
+          : Math.min(...para.items.map(i => i.pdfX))
+        const drawY  = fmt.top != null
+          ? pageH - fmt.top / scale - fs
+          : Math.max(...para.items.map(i => i.pdfY))
+        const drawMaxW = origMaxX - origMinX
+        if (newText?.trim()) {
+          libPage.drawText(newText, {
+            x: Math.max(drawX, 0), y: Math.max(drawY, 0),
+            size: fs, font, color,
+            maxWidth: drawMaxW,
+            lineHeight: fs * 1.3,
+          })
         }
       }
 
@@ -424,9 +545,10 @@ export function usePdfDocument() {
 
     // Reset page slots so every page re-renders from the new bytes
     for (const [, slot] of pages.entries()) {
-      slot.rendered  = false
-      slot.textItems = []
-      slot.viewport  = null
+      slot.rendered    = false
+      slot.textItems   = []
+      slot.paragraphs  = []
+      slot.viewport    = null
       slot.edits.clear()
       slot.formats?.clear()
       if (slot.additions) slot.additions.splice(0)
@@ -455,32 +577,60 @@ export function usePdfDocument() {
 
       for (const item of slot.textItems) {
         if (!slot.edits.has(item.id)) continue
+        if (item.id.startsWith('para-')) continue   // handled below
         const newText = slot.edits.get(item.id)
         const fmt  = slot.formats?.get(item.id) ?? {}
         const font = pickFont(fonts, fmt.fontFamily, fmt.bold, fmt.italic)
-        const fs   = Math.min(Math.max(item.pdfFontSize, 5), 72)
-
-        // White rectangle to cover old text
+        const origFs = Math.min(Math.max(item.pdfFontSize, 5), 72)
+        const fs = fmt.fontSize && item.fontSize
+          ? Math.min(Math.max((fmt.fontSize / item.fontSize) * origFs, 3), 144)
+          : origFs
         libPage.drawRectangle({
-          x:      item.pdfX - 1,
-          y:      item.pdfY - fs * 0.2,
-          width:  item.pdfWidth + 2,
-          height: fs * 1.3,
-          color:  rgb(1, 1, 1),
-          opacity: 1,
+          x: item.pdfX - 1, y: item.pdfY - origFs * 0.2,
+          width: item.pdfWidth + 2, height: origFs * 1.5,
+          color: rgb(1, 1, 1), opacity: 1,
         })
-
-        // Draw replacement text
         if (newText.trim()) {
           libPage.drawText(newText, {
-            x:        item.pdfX,
-            y:        item.pdfY,
-            size:     fs,
-            font,
-            color:    hexToRgb(fmt.color),
-            maxWidth: item.pdfWidth * 2,
+            x: item.pdfX, y: item.pdfY, size: fs, font,
+            color: hexToRgb(fmt.color), maxWidth: item.pdfWidth * 2,
           })
           if (fmt.underline) drawUnderline(libPage, item.pdfX, item.pdfY, newText, font, fs)
+        }
+      }
+
+      // ── Paragraph edits (text / format / position changes) ──
+      for (const [editId, newText] of slot.edits.entries()) {
+        if (!editId.startsWith('para-')) continue
+        const para = slot.paragraphs?.find(p => p.id === editId)
+        if (!para || !para.items.length) continue
+        const fmt   = slot.formats?.get(editId) ?? {}
+        const font  = pickFont(fonts, fmt.fontFamily, fmt.bold, fmt.italic)
+        const baseFs = Math.min(Math.max(para.pdfFontSize, 5), 72)
+        const fs = fmt.fontSize && para.fontSize
+          ? Math.min(Math.max((fmt.fontSize / para.fontSize) * baseFs, 3), 144)
+          : baseFs
+        const color  = fmt.color ? hexToRgb(fmt.color) : rgb(0, 0, 0)
+        const origMinX = Math.min(...para.items.map(i => i.pdfX)) - 2
+        const origMaxX = Math.max(...para.items.map(i => i.pdfX + i.pdfWidth)) + 4
+        const origMinY = Math.min(...para.items.map(i => i.pdfY)) - baseFs * 0.3
+        const origMaxY = Math.max(...para.items.map(i => i.pdfY + i.pdfFontSize * 1.2)) + baseFs * 0.2
+        libPage.drawRectangle({ x: origMinX, y: origMinY, width: origMaxX - origMinX, height: origMaxY - origMinY, color: rgb(1, 1, 1), opacity: 1 })
+        const scale  = slot.viewport?.scale ?? RENDER_SCALE
+        const drawX  = fmt.left != null
+          ? fmt.left / scale
+          : Math.min(...para.items.map(i => i.pdfX))
+        const drawY  = fmt.top != null
+          ? pageH - fmt.top / scale - fs
+          : Math.max(...para.items.map(i => i.pdfY))
+        const drawMaxW = origMaxX - origMinX
+        if (newText?.trim()) {
+          libPage.drawText(newText, {
+            x: Math.max(drawX, 0), y: Math.max(drawY, 0),
+            size: fs, font, color,
+            maxWidth: drawMaxW,
+            lineHeight: fs * 1.3,
+          })
         }
       }
 

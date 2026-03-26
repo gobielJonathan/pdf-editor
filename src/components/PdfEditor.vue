@@ -40,6 +40,7 @@ const isExporting = ref(false)
 const showSidebar = ref(true)
 const resetKey = ref(0)   // bumped on cancel to force PdfPage remount
 const isSaving = ref(false)
+const justSaved = ref(false)        // briefly true after a successful save
 const activeFontInfo = ref(null)  // { fontName, fontSize, pageNum, id } when text is focused
 
 const ZOOM_MIN = 0.5
@@ -102,6 +103,8 @@ async function handleSave() {
         for (let p = 1; p <= props.pageCount; p++) {
             await generateThumbnail(p)
         }
+        justSaved.value = true
+        setTimeout(() => { justSaved.value = false }, 2200)
         success('Changes saved to PDF!')
     } catch (err) {
         console.error(err)
@@ -146,7 +149,6 @@ function onKeydown(e) {
     if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); handleSave() }
     if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'e')) { e.preventDefault(); handleExport() }
     if ((e.ctrlKey || e.metaKey) && e.key === 'f') { e.preventDefault(); showSearch.value ? closeSearch() : openSearch() }
-    if (e.key === 'e' && !e.ctrlKey && !e.metaKey) editMode.value = !editMode.value
     if (e.key === 'Escape') exitTool()
 }
 
@@ -250,7 +252,6 @@ function totalEdits() {
     if (typeof props.pages?.values !== 'function') return 0
     let n = 0
     for (const s of props.pages.values()) {
-        n += s.edits?.size ?? 0
         n += s.additions?.length ?? 0
     }
     return n
@@ -487,16 +488,6 @@ function onSearchKeydown(e) {
 
                 <div class="toolbar-sep"></div>
 
-                <!-- Edit toggle -->
-                <button class="tbar-btn tbar-edit" :class="{ active: editMode }" title="Toggle edit mode (E)"
-                    @click="editMode = !editMode">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                    </svg>
-                    {{ editMode ? 'Editing' : 'Viewing' }}
-                </button>
-
                 <!-- Search -->
                 <button class="tbar-btn" :class="{ active: showSearch }" title="Search text (Ctrl/⌘F)"
                     @click="showSearch ? closeSearch() : openSearch()">
@@ -526,10 +517,8 @@ function onSearchKeydown(e) {
             <!-- ── Keyboard hint bar ── -->
             <Transition name="fade-fast">
                 <div v-if="editMode" class="hint-bar">
-                    <kbd>Click</kbd> text to edit &nbsp;·&nbsp;
-                    <kbd>Esc</kbd> deselect &nbsp;·&nbsp;
-                    <kbd>⌘S</kbd> save &nbsp;·&nbsp;
-                    <kbd>⌘D</kbd> download
+                    Use <strong>Text</strong> to add a text box &nbsp;·&nbsp;
+                    <kbd>⌘S</kbd> save
                 </div>
             </Transition>
 
@@ -623,21 +612,27 @@ function onSearchKeydown(e) {
 
             <!-- ── Floating edit action bar ── -->
             <Transition name="action-bar">
-                <div v-if="totalEdits() > 0" class="edit-action-bar" role="status" aria-live="polite">
+                <div v-if="totalEdits() > 0 || justSaved" class="edit-action-bar" role="status" aria-live="polite">
                     <div class="edit-action-inner">
                         <div class="edit-action-info">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                stroke-width="2">
+                            <svg v-if="!justSaved" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                stroke="currentColor" stroke-width="2">
                                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
                                 <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
                             </svg>
-                            <span>
+                            <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2.5" style="color: #4ade80">
+                                <polyline points="20 6 9 17 4 12" />
+                            </svg>
+                            <span v-if="!justSaved">
                                 <strong>{{ totalEdits() }}</strong>
                                 unsaved change{{ totalEdits() !== 1 ? 's' : '' }}
                             </span>
+                            <span v-else style="color: #4ade80; font-weight: 600">Saved!</span>
                         </div>
                         <div class="edit-action-btns">
-                            <button class="action-btn cancel-btn" @click="cancelEdits" :disabled="isExporting">
+                            <button v-if="!justSaved" class="action-btn cancel-btn" @click="cancelEdits"
+                                :disabled="isSaving || isExporting">
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2.5">
                                     <line x1="18" y1="6" x2="6" y2="18" />
@@ -645,15 +640,20 @@ function onSearchKeydown(e) {
                                 </svg>
                                 Discard
                             </button>
-                            <button class="action-btn save-btn" @click="handleSave" :disabled="isSaving">
+                            <button class="action-btn save-btn" :class="{ 'save-btn-done': justSaved }"
+                                @click="handleSave" :disabled="isSaving || justSaved">
                                 <span v-if="isSaving" class="action-spinner" aria-hidden="true" />
+                                <svg v-else-if="justSaved" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" stroke-width="2.5">
+                                    <polyline points="20 6 9 17 4 12" />
+                                </svg>
                                 <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                                     stroke-width="2.5">
                                     <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
                                     <polyline points="17 21 17 13 7 13 7 21" />
                                     <polyline points="7 3 7 8 15 8" />
                                 </svg>
-                                {{ isSaving ? 'Saving…' : 'Save' }}
+                                {{ isSaving ? 'Saving…' : justSaved ? 'Saved' : 'Save' }}
                             </button>
                         </div>
                     </div>
@@ -983,19 +983,6 @@ function onSearchKeydown(e) {
     cursor: not-allowed;
 }
 
-/* Edit toggle — pill style when active */
-.tbar-edit {
-    border: 1.5px solid var(--color-border);
-    border-radius: var(--radius-full);
-    padding: 5px 12px;
-}
-
-.tbar-edit.active {
-    background: var(--color-accent);
-    border-color: var(--color-accent);
-    color: #fff;
-}
-
 /* Cancel active tool */
 .tbar-cancel {
     color: var(--color-danger) !important;
@@ -1259,6 +1246,16 @@ kbd {
     background: #ffb840;
     transform: translateY(-2px);
     box-shadow: 0 8px 24px rgba(255, 197, 112, 0.55);
+}
+
+.save-btn-done,
+.save-btn-done:disabled {
+    background: rgba(74, 222, 128, 0.18) !important;
+    color: #4ade80 !important;
+    box-shadow: 0 0 0 1.5px rgba(74, 222, 128, 0.4) !important;
+    opacity: 1 !important;
+    cursor: default !important;
+    transform: none !important;
 }
 
 .action-spinner {

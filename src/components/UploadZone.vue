@@ -110,13 +110,15 @@ function openPicker() {
     flex-direction: column;
     align-items: center;
     gap: 20px;
-    width: clamp(300px, 60vw, 560px);
-    padding: 56px 32px;
-    border-radius: var(--radius-xl);
-    border: 2.5px dashed var(--color-border);
-    background: var(--color-surface);
+    width: clamp(320px, 62vw, 580px);
+    padding: 60px 40px;
+    border-radius: 20px;
+    border: 1.5px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(18px);
     cursor: pointer;
     overflow: hidden;
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
     transition:
         border-color var(--transition-base),
         background var(--transition-base),
@@ -129,9 +131,10 @@ function openPicker() {
 .upload-zone:hover,
 .upload-zone:focus-visible,
 .upload-zone.hovering {
-    border-color: var(--color-accent);
-    box-shadow: 0 0 0 4px var(--color-accent-light), var(--shadow-md);
-    transform: translateY(-2px);
+    border-color: rgba(84, 119, 146, 0.55);
+    background: rgba(84, 119, 146, 0.09);
+    box-shadow: 0 0 0 5px rgba(84, 119, 146, 0.14), 0 12px 48px rgba(0, 0, 0, 0.32), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+    transform: translateY(-3px);
 }
 
 .upload-zone.dragging {
@@ -147,7 +150,7 @@ function openPicker() {
     position: absolute;
     border-radius: 50%;
     filter: blur(60px);
-    opacity: 0;
+    opacity: 0.55;
     transition: opacity 0.6s ease;
     pointer-events: none;
 }
@@ -229,13 +232,14 @@ function openPicker() {
 }
 
 .upload-title {
-    font-size: 1.2rem;
-    font-weight: 600;
+    font-size: 1.25rem;
+    font-weight: 700;
     color: var(--color-text);
+    letter-spacing: -0.01em;
 }
 
 .upload-sub {
-    font-size: 0.9rem;
+    font-size: 0.88rem;
     color: var(--color-text-muted);
 }
 

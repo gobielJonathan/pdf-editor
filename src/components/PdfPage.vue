@@ -76,11 +76,21 @@ onMounted(() => {
     )
     if (containerRef.value) observer.observe(containerRef.value)
     document.addEventListener('keydown', onGlobalKeydown)
+    document.addEventListener('pointerdown', onGlobalPointerdown, true)
 })
 
 onUnmounted(() => {
     document.removeEventListener('keydown', onGlobalKeydown)
+    document.removeEventListener('pointerdown', onGlobalPointerdown, true)
 })
+
+/** Clear activeItemId when user clicks completely outside this page's zoom-wrap */
+function onGlobalPointerdown(e) {
+    if (!activeItemId.value) return
+    // If the click is inside our page-zoom-wrap (text items, chrome, format bar) — keep selection
+    if (containerRef.value?.contains(e.target)) return
+    activeItemId.value = null
+}
 
 // ── Imperative DOM ref management ────────────────────────────────────────────
 /**
@@ -116,14 +126,172 @@ function updateTextFormat(changes) {
 }
 
 function discardTextEdit(item) {
-    // Clear edit + format from store
     emit('edit', props.pageNum, item.id, null)
     props.recordFormatFn?.(props.pageNum, item.id, null)
-    // Reset DOM to original text
     const el = domRefs.get(item.id)
     if (el) el.innerText = item.str
     activeItemId.value = null
     el?.blur()
+}
+
+// ── Paragraphs — pdfaid-style: select → drag-handle → inline edit ────────────────
+const paragraphs = computed(() => slot.value.paragraphs ?? [])
+const isParaEdited = (para) => slot.value.edits?.has(para.id)
+const activeParaId = ref(null)
+const activePara = computed(() => paragraphs.value.find(p => p.id === activeParaId.value) ?? null)
+const activeParaFormat = computed(() => slot.value.formats?.get(activeParaId.value) ?? {})
+
+// Per-paragraph contenteditable DOM map — innerText set imperatively once
+const paraTextRefs = new Map()
+
+function setParaTextRef(el, para) {
+    if (!el) { paraTextRefs.delete(para.id); return }
+    const alreadySet = paraTextRefs.has(para.id)
+    paraTextRefs.set(para.id, el)
+    if (!alreadySet) {
+        const saved = slot.value.edits?.get(para.id)
+        el.innerText = saved !== undefined ? saved : para.str
+    }
+}
+
+/** Returns the effective position/size style for a paragraph, respecting drag overrides */
+function paraStyle(para) {
+    const fmt = slot.value.formats?.get(para.id) ?? {}
+    const left = fmt.left != null ? fmt.left : para.left
+    const top = fmt.top != null ? fmt.top : para.top
+    return {
+        left: `${left}px`,
+        top: `${top}px`,
+        width: `${para.width}px`,
+        minHeight: `${para.height}px`,
+    }
+}
+
+/** Font size for the inner text div */
+function paraTextStyle(para) {
+    const fmt = slot.value.formats?.get(para.id) ?? {}
+    const fontSize = (activeParaId.value === para.id && fmt.fontSize) ? fmt.fontSize : para.fontSize
+    const bold = activeParaId.value === para.id ? (fmt.bold ?? false) : false
+    const italic = activeParaId.value === para.id ? (fmt.italic ?? false) : false
+    const color = activeParaId.value === para.id ? (fmt.color ?? '') : ''
+    const fontFamily = activeParaId.value === para.id ? (fmt.fontFamily ?? '') : ''
+    return {
+        fontSize: `${fontSize}px`,
+        fontWeight: bold ? 'bold' : '',
+        fontStyle: italic ? 'italic' : '',
+        color: color ? color : '',
+        fontFamily: fontFamily || '',
+    }
+}
+
+function updateParaFormat(changes) {
+    if (!activeParaId.value || !props.recordFormatFn) return
+    const updated = { ...activeParaFormat.value, ...changes }
+    props.recordFormatFn(props.pageNum, activeParaId.value, updated)
+    // Ensure save button activates
+    const para = activePara.value
+    if (para) emit('edit', props.pageNum, para.id, slot.value.edits?.get(para.id) ?? para.str)
+}
+
+function discardParaEdit(para) {
+    emit('edit', props.pageNum, para.id, null)
+    props.recordFormatFn?.(props.pageNum, para.id, null)
+    const el = paraTextRefs.get(para.id)
+    if (el) el.innerText = para.str
+    activeParaId.value = null
+}
+
+/** Click on block: select and focus the inner text */
+function onParaSelect(e, para) {
+    if (!props.editMode || !props.textEditActive) return
+    if (props.activeTool) return
+    const wasAlreadyActive = activeParaId.value === para.id
+    activeParaId.value = para.id
+    // Only steal caret placement when newly selecting.
+    // When block is already active, let the browser handle cursor natively.
+    if (!wasAlreadyActive) {
+        nextTick(() => {
+            const el = paraTextRefs.get(para.id)
+            if (el) { el.focus(); placeCaret(el, e) }
+        })
+    }
+}
+
+/** Place caret at click position inside a contenteditable element */
+function placeCaret(el, e) {
+    try {
+        if (document.caretRangeFromPoint) {
+            const range = document.caretRangeFromPoint(e.clientX, e.clientY)
+            if (range) {
+                const sel = window.getSelection()
+                sel.removeAllRanges()
+                sel.addRange(range)
+                return
+            }
+        }
+        // Fallback: place caret at end
+        const range = document.createRange()
+        range.selectNodeContents(el)
+        range.collapse(false)
+        const sel = window.getSelection()
+        sel.removeAllRanges()
+        sel.addRange(range)
+    } catch (_) { }
+}
+
+/** Drag handle mousedown — moves the whole block */
+function onParaDragMousedown(e, para) {
+    if (!props.editMode || !props.textEditActive) return
+    e.stopPropagation()
+    e.preventDefault()   // prevent text selection
+    activeParaId.value = para.id
+
+    const fmt = slot.value.formats?.get(para.id) ?? {}
+    const origLeft = fmt.left != null ? fmt.left : para.left
+    const origTop = fmt.top != null ? fmt.top : para.top
+    const startX = e.clientX
+    const startY = e.clientY
+    let moved = false
+
+    function onMove(mv) {
+        const dx = (mv.clientX - startX) / props.zoom
+        const dy = (mv.clientY - startY) / props.zoom
+        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true
+        props.recordFormatFn?.(props.pageNum, para.id, {
+            ...activeParaFormat.value,
+            left: origLeft + dx,
+            top: origTop + dy,
+        })
+    }
+    function onUp() {
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+        if (moved) emit('edit', props.pageNum, para.id, slot.value.edits?.get(para.id) ?? para.str)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+}
+
+function onParaInput(para, e) {
+    emit('edit', props.pageNum, para.id, e.target.innerText ?? '')
+}
+
+function onParaBlur(para, e) {
+    const text = e.target.innerText ?? ''
+    const newVal = text === para.str ? null : text
+    emit('edit', props.pageNum, para.id, newVal)
+    // Don't clear activeParaId here — clicking format bar would deselect too early
+}
+
+function onParaFocus(para) {
+    activeParaId.value = para.id
+    emit('text-focus', {
+        pageNum: props.pageNum,
+        id: para.id,
+        fontName: para.fontName ?? '',
+        fontSize: Math.round(para.pdfFontSize ?? para.fontSize ?? 12),
+        str: para.str,
+    })
 }
 
 // ── Page click — place new addition ──────────────────────────────────────────
@@ -300,11 +468,79 @@ function onTextResizeMousedown(e, addition) {
 // ── Deselect addition when clicking canvas background ─────────────────────
 function onCanvasClick() {
     selectedAdditionId.value = null
+    activeItemId.value = null
 }
 
-// ── Edit handlers ─────────────────────────────────────────────────────────────
+// ── Inline text edit handlers ─────────────────────────────────────────────────
+
+/** Effective position — respects drag overrides stored in formats */
+function itemEffectiveLeft(item) {
+    const fmt = slot.value.formats?.get(item.id) ?? {}
+    return fmt.left != null ? fmt.left : item.left
+}
+function itemEffectiveTop(item) {
+    const fmt = slot.value.formats?.get(item.id) ?? {}
+    return fmt.top != null ? fmt.top : item.top
+}
+
+/** Drag text item to reposition it on the page */
+function onTextItemDragMousedown(e, item) {
+    cancelBlur()
+    e.stopPropagation()
+    e.preventDefault()
+    const fmt = slot.value.formats?.get(item.id) ?? {}
+    const origLeft = fmt.left != null ? fmt.left : item.left
+    const origTop = fmt.top != null ? fmt.top : item.top
+    const startX = e.clientX
+    const startY = e.clientY
+    function onMove(mv) {
+        const dx = (mv.clientX - startX) / props.zoom
+        const dy = (mv.clientY - startY) / props.zoom
+        props.recordFormatFn?.(props.pageNum, item.id, {
+            ...activeItemFormat.value,
+            left: origLeft + dx,
+            top: origTop + dy,
+        })
+    }
+    function onUp() {
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+        // Ensure a pending edit exists so Save is enabled after just dragging
+        const el = domRefs.get(item.id)
+        const cur = el?.innerText ?? item.str
+        emit('edit', props.pageNum, item.id, cur === item.str ? cur : cur)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+}
+
+/** Drag bottom-right corner of text item to grow/shrink font size */
+function onTextItemResizeMousedown(e, item) {
+    cancelBlur()
+    e.stopPropagation()
+    e.preventDefault()
+    const origSize = activeItemFormat.value.fontSize || item.fontSize
+    const minSize = Math.round(RENDER_SCALE * 4)
+    const startY = e.clientY
+    function onMove(ev) {
+        const dy = (ev.clientY - startY) / props.zoom
+        const newSize = Math.max(minSize, Math.round(origSize + dy))
+        props.recordFormatFn?.(props.pageNum, item.id, {
+            ...activeItemFormat.value,
+            fontSize: newSize,
+        })
+    }
+    function onUp() {
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+}
+
 function onTextClick(item) {
     if (!props.editMode) return
+    if (props.activeTool) return
     activeItemId.value = item.id
 }
 
@@ -339,22 +575,29 @@ function onFocus(item) {
 }
 
 function onInput(item, e) {
-    // Save to reactive store — does NOT cause re-render of this element
-    // because we are not binding {{ }} inside the contenteditable.
     emit('edit', props.pageNum, item.id, e.target.innerText ?? '')
     scrollCaretIntoView()
 }
+
+// cancelBlur kept as a no-op so existing template @mousedown="cancelBlur" calls are harmless
+function cancelBlur() { }
 
 function onBlur(item, e) {
     const text = e.target.innerText ?? ''
     const newVal = text === item.str ? null : text
     emit('edit', props.pageNum, item.id, newVal)
-    if (activeItemId.value === item.id) activeItemId.value = null
+    // Do NOT clear activeItemId here — format bar must stay visible while the
+    // user opens the font dropdown or color picker (which steal focus from the
+    // contenteditable). activeItemId is cleared only by explicit outside clicks
+    // (onCanvasClick / global pointerdown handler) or by Escape / discardTextEdit.
     emit('text-blur')
 }
 
-function onKeydown(e) {
-    if (e.key === 'Escape') e.target.blur()
+function onItemKeydown(e) {
+    if (e.key === 'Escape') {
+        activeItemId.value = null
+        e.target.blur()
+    }
 }</script>
 
 <template>
@@ -382,69 +625,114 @@ function onKeydown(e) {
                 <div v-if="isRendered && editMode" class="text-overlay"
                     :style="{ width: `${canvasW}px`, height: `${canvasH}px` }"
                     :aria-label="`Editable text layer for page ${pageNum}`">
-                    <div v-for="item in textItems" :key="item.id" :ref="(el) => setDomRef(el, item)" class="text-item"
-                        :class="{
+
+                    <!-- Individual items: always interactive; search highlights always work -->
+                    <template v-for="item in textItems" :key="item.id">
+                        <!-- Contenteditable text item -->
+                        <div :ref="(el) => setDomRef(el, item)" class="text-item" :class="{
                             active: activeItemId === item.id,
                             edited: isEdited(item),
+                            'text-editable': true,
                             'search-match': searchMatchIds.has(item.id) && searchCurrentId !== item.id,
                             'search-match-current': searchCurrentId === item.id,
                         }" :style="{
-                            left: `${item.left}px`,
-                            top: `${item.top}px`,
-                            width: 'fit-content',
-                            minHeight: `${item.height}px`,
-                            fontSize: `${activeItemId === item.id && activeItemFormat.fontSize ? activeItemFormat.fontSize : item.fontSize}px`,
-                            lineHeight: `${item.height / Math.max(item.fontSize, 1)}`,
-                        }" contenteditable="true" spellcheck="false" :data-id="item.id" @click.stop="onTextClick(item)"
-                        @focus="onFocus(item)" @input="onInput(item, $event)" @blur="onBlur(item, $event)"
-                        @keydown="onKeydown" />
+                                left: `${itemEffectiveLeft(item)}px`,
+                                top: `${itemEffectiveTop(item)}px`,
+                                width: `${item.width}px`,
+                                minHeight: `${item.height}px`,
+                                fontSize: `${activeItemId === item.id && activeItemFormat.fontSize ? activeItemFormat.fontSize : item.fontSize}px`,
+                                lineHeight: `${item.height / Math.max(item.fontSize, 1)}`,
+                                fontWeight: activeItemId === item.id && activeItemFormat.bold ? 'bold' : '',
+                                fontStyle: activeItemId === item.id && activeItemFormat.italic ? 'italic' : '',
+                                color: activeItemId === item.id && activeItemFormat.color ? activeItemFormat.color : '',
+                                fontFamily: activeItemId === item.id && activeItemFormat.fontFamily ? activeItemFormat.fontFamily : '',
+                            }" contenteditable="true" spellcheck="false" :data-id="item.id"
+                            @click.stop="onTextClick(item)" @focus="onFocus(item)" @input="onInput(item, $event)"
+                            @blur="onBlur(item, $event)" @keydown="onItemKeydown"></div>
 
-                    <!-- Format bar: shown when a text item is focused -->
-                    <Transition name="txt-fmt-pop">
-                        <div v-if="activeItemId && activeItem" class="text-item-format-bar"
-                            :style="{ left: `${activeItem.left}px`, top: `${Math.max(0, activeItem.top - 54)}px` }"
-                            @mousedown.prevent.stop @click.stop>
-                            <button class="fmt-btn" :class="{ active: activeItemFormat.bold }" title="Bold"
-                                @click="updateTextFormat({ bold: !activeItemFormat.bold })">
-                                <strong>B</strong>
-                            </button>
-                            <button class="fmt-btn fmt-italic" :class="{ active: activeItemFormat.italic }"
-                                title="Italic" @click="updateTextFormat({ italic: !activeItemFormat.italic })">
-                                <em>I</em>
-                            </button>
-                            <div class="fmt-sep"></div>
-                            <button class="fmt-btn fmt-step" title="Decrease size"
-                                @click="updateTextFormat({ fontSize: Math.max(Math.round(RENDER_SCALE * 4), (activeItemFormat.fontSize || activeItem.fontSize) - 2) })">&#8722;</button>
-                            <span class="fmt-size-val">{{ Math.round((activeItemFormat.fontSize || activeItem.fontSize)
-                                / RENDER_SCALE) }}pt</span>
-                            <button class="fmt-btn fmt-step" title="Increase size"
-                                @click="updateTextFormat({ fontSize: (activeItemFormat.fontSize || activeItem.fontSize) + 2 })">+</button>
-                            <div class="fmt-sep"></div>
-                            <select class="fmt-select" :value="activeItemFormat.fontFamily || ''"
-                                @change.stop="updateTextFormat({ fontFamily: $event.target.value || undefined })">
-                                <option value="">Original</option>
-                                <option value="Helvetica">Sans</option>
-                                <option value="TimesRoman">Serif</option>
-                                <option value="Courier">Mono</option>
-                            </select>
-                            <div class="fmt-sep"></div>
-                            <label class="fmt-color-wrap" title="Text color">
-                                <input type="color" class="fmt-color" :value="activeItemFormat.color || '#000000'"
-                                    @input.stop="updateTextFormat({ color: $event.target.value })" />
-                            </label>
-                            <div class="fmt-sep"></div>
-                            <button class="fmt-btn fmt-delete-btn" title="Discard edit for this item"
-                                @click="discardTextEdit(activeItem)">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                    stroke-width="2.5">
-                                    <polyline points="3 6 5 6 21 6" />
-                                    <path d="M19 6l-1 14H6L5 6" />
-                                    <path d="M10 11v6M14 11v6" />
-                                    <path d="M9 6V4h6v2" />
+                        <!-- Active chrome: dashed border + drag handle + X button + resize handle -->
+                        <div v-if="activeItemId === item.id" class="text-item-chrome" :style="{
+                            left: `${itemEffectiveLeft(item)}px`,
+                            top: `${itemEffectiveTop(item)}px`,
+                            minWidth: `${item.width}px`,
+                            minHeight: `${item.height}px`,
+                        }" @mousedown="cancelBlur" @click.stop>
+                            <!-- Drag handle — top center -->
+                            <div class="ti-drag-handle" @mousedown.stop="onTextItemDragMousedown($event, item)">
+                                <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
+                                    <circle cx="5" cy="4" r="1.4" />
+                                    <circle cx="11" cy="4" r="1.4" />
+                                    <circle cx="5" cy="8" r="1.4" />
+                                    <circle cx="11" cy="8" r="1.4" />
+                                    <circle cx="5" cy="12" r="1.4" />
+                                    <circle cx="11" cy="12" r="1.4" />
+                                </svg>
+                            </div>
+                            <!-- Delete / discard button — top right -->
+                            <button class="ti-close-btn" title="Discard edit" @mousedown.prevent.stop
+                                @click.stop="discardTextEdit(item)">
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="3">
+                                    <line x1="18" y1="6" x2="6" y2="18" />
+                                    <line x1="6" y1="6" x2="18" y2="18" />
                                 </svg>
                             </button>
+                            <!-- Font-size resize handle — bottom right -->
+                            <div class="ti-resize-handle" title="Drag to resize text"
+                                @mousedown.stop="onTextItemResizeMousedown($event, item)"></div>
                         </div>
-                    </Transition>
+                    </template>
+                </div>
+            </Transition>
+
+            <!-- Format bar: lives OUTSIDE text-overlay so pointer-events:none doesn't interfere -->
+            <Transition name="txt-fmt-pop">
+                <div v-if="isRendered && editMode && activeItemId && activeItem" class="text-item-format-bar"
+                    :style="{ left: `${itemEffectiveLeft(activeItem)}px`, top: `${Math.max(8, itemEffectiveTop(activeItem) - 54)}px` }"
+                    @mousedown="cancelBlur" @click.stop>
+                    <!-- Bold / Italic — @mousedown.prevent keeps focus on text item -->
+                    <button class="fmt-btn" :class="{ active: activeItemFormat.bold }" title="Bold" @mousedown.prevent
+                        @click="updateTextFormat({ bold: !activeItemFormat.bold })">
+                        <strong>B</strong>
+                    </button>
+                    <button class="fmt-btn fmt-italic" :class="{ active: activeItemFormat.italic }" title="Italic"
+                        @mousedown.prevent @click="updateTextFormat({ italic: !activeItemFormat.italic })">
+                        <em>I</em>
+                    </button>
+                    <div class="fmt-sep"></div>
+                    <!-- Size −/+ — @mousedown.prevent keeps focus on text item -->
+                    <button class="fmt-btn fmt-step" title="Decrease size" @mousedown.prevent
+                        @click="updateTextFormat({ fontSize: Math.max(Math.round(RENDER_SCALE * 4), (activeItemFormat.fontSize || activeItem.fontSize) - 2) })">&#8722;</button>
+                    <span class="fmt-size-val">{{ Math.round((activeItemFormat.fontSize || activeItem.fontSize) /
+                        RENDER_SCALE) }}pt</span>
+                    <button class="fmt-btn fmt-step" title="Increase size" @mousedown.prevent
+                        @click="updateTextFormat({ fontSize: (activeItemFormat.fontSize || activeItem.fontSize) + 2 })">+</button>
+                    <div class="fmt-sep"></div>
+                    <!-- Font family select — @mousedown.stop lets native dropdown open, cancelBlur prevents dismiss -->
+                    <select class="fmt-select" :value="activeItemFormat.fontFamily || ''" @mousedown.stop="cancelBlur"
+                        @change.stop="updateTextFormat({ fontFamily: $event.target.value || undefined })">
+                        <option value="">Original</option>
+                        <option value="Helvetica">Sans</option>
+                        <option value="TimesRoman">Serif</option>
+                        <option value="Courier">Mono</option>
+                    </select>
+                    <div class="fmt-sep"></div>
+                    <!-- Color — @mousedown.stop lets native picker open, cancelBlur prevents dismiss -->
+                    <label class="fmt-color-wrap" title="Text color" @mousedown.stop="cancelBlur">
+                        <input type="color" class="fmt-color" :value="activeItemFormat.color || '#000000'"
+                            @mousedown.stop @input.stop="updateTextFormat({ color: $event.target.value })" />
+                    </label>
+                    <div class="fmt-sep"></div>
+                    <button class="fmt-btn fmt-delete-btn" title="Discard edit" @mousedown.prevent
+                        @click="discardTextEdit(activeItem)">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2.5">
+                            <polyline points="3 6 5 6 21 6" />
+                            <path d="M19 6l-1 14H6L5 6" />
+                            <path d="M10 11v6M14 11v6" />
+                            <path d="M9 6V4h6v2" />
+                        </svg>
+                    </button>
                 </div>
             </Transition>
 
@@ -663,11 +951,12 @@ function onKeydown(e) {
     overflow: visible;
 }
 
-/* ── Editable text items ── */
+/* ── Text items ── */
 .text-item {
     position: absolute;
-    cursor: text;
-    white-space: pre;
+    cursor: default;
+    white-space: pre-wrap;
+    word-break: break-word;
     overflow: visible;
     outline: none;
     border-radius: 3px;
@@ -677,8 +966,7 @@ function onKeydown(e) {
     /* Transparent by default — doesn't obscure the rendered PDF text */
     color: transparent;
     background: transparent;
-    caret-color: var(--color-accent);
-    pointer-events: all;
+    pointer-events: none;
 
     transition:
         color var(--transition-fast),
@@ -686,29 +974,123 @@ function onKeydown(e) {
         box-shadow var(--transition-fast);
 }
 
-/* Hover: tinted halo signals "this is editable" */
-.edit-mode .text-item:hover {
-    background: var(--color-accent-light);
-    box-shadow: 0 0 0 1.5px var(--color-accent-glow);
+/* Only interactive when text-edit mode is active */
+.text-item.text-editable {
+    pointer-events: all;
+    cursor: text;
+    caret-color: var(--color-accent);
 }
 
-/* Active / focused — always on top, expands with content so caret is never clipped */
+/* Edit mode: subtle dashed outline so users can see every text block */
+.edit-mode .text-item.text-editable {
+    outline: 1.5px dashed rgba(84, 119, 200, 0.30);
+    outline-offset: 1px;
+}
+
+/* Hover: stronger outline + tinted halo */
+.edit-mode .text-item.text-editable:hover {
+    background: var(--color-accent-light);
+    box-shadow: 0 0 0 1.5px var(--color-accent-glow);
+    outline: 1.5px solid var(--color-accent);
+}
+
+/* Active / focused — white bg, visible text; chrome overlay provides the border */
 .text-item.active,
-.text-item:focus {
+.text-item.text-editable:focus {
     color: var(--color-text) !important;
     background: rgba(255, 255, 255, 0.97) !important;
-    box-shadow: 0 0 0 2.5px var(--color-accent), var(--shadow-md) !important;
+    box-shadow: var(--shadow-md) !important;
+    outline: none !important;
     z-index: 9999 !important;
-    /* always in front of everything */
     position: absolute !important;
     width: max-content !important;
-    /* expands as the user types */
     min-width: 60px;
     max-width: 80vw;
-    /* prevent off-screen bleed */
     white-space: pre-wrap;
     word-break: break-word;
     overflow: visible !important;
+}
+
+/* ── Active text item chrome (dashed border + handles) ── */
+.text-item-chrome {
+    position: absolute;
+    pointer-events: none;
+    /* clicks fall through to contenteditable */
+    border: 1.5px dashed var(--color-accent);
+    border-radius: 3px;
+    z-index: 10000;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+    background: transparent;
+}
+
+/* Drag handle — top center */
+.ti-drag-handle {
+    position: absolute;
+    top: -22px;
+    left: 50%;
+    transform: translateX(-50%);
+    height: 20px;
+    padding: 0 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-accent);
+    border-radius: 6px 6px 0 0;
+    color: #fff;
+    cursor: grab;
+    pointer-events: all;
+    user-select: none;
+    z-index: 10001;
+}
+
+.ti-drag-handle:active {
+    cursor: grabbing;
+}
+
+/* Delete / discard button — top right */
+.ti-close-btn {
+    position: absolute;
+    top: -11px;
+    right: -11px;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--color-danger);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: var(--shadow-sm);
+    pointer-events: all;
+    z-index: 10001;
+    transition: transform var(--transition-fast), background var(--transition-fast);
+}
+
+.ti-close-btn:hover {
+    background: #c04444;
+    transform: scale(1.15);
+}
+
+/* Font-size resize handle — bottom right */
+.ti-resize-handle {
+    position: absolute;
+    bottom: -5px;
+    right: -5px;
+    width: 10px;
+    height: 10px;
+    background: var(--color-accent);
+    border-radius: 2px;
+    cursor: se-resize;
+    pointer-events: all;
+    z-index: 10001;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+    opacity: 0.85;
+}
+
+.ti-resize-handle:hover {
+    opacity: 1;
+    transform: scale(1.2);
 }
 
 /* Modified but not focused */
@@ -733,7 +1115,6 @@ function onKeydown(e) {
     z-index: 50;
 }
 
-/* ── Fade transition ── */
 .fade-fast-enter-active,
 .fade-fast-leave-active {
     transition: opacity 0.25s ease;
@@ -981,7 +1362,7 @@ function onKeydown(e) {
     border-radius: var(--radius-md);
     box-shadow: 0 4px 18px rgba(0, 0, 0, 0.36), 0 0 0 1px rgba(255, 255, 255, 0.09);
     white-space: nowrap;
-    z-index: 50;
+    z-index: 10000;
     user-select: none;
     pointer-events: all;
 }
