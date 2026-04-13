@@ -124,13 +124,21 @@ async function handleExport() {
     isExporting.value = true
     try {
         const blob = await props.exportFn()
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = `${props.fileName}-edited.pdf`
-        a.click()
-        URL.revokeObjectURL(url)
-        success(`"${props.fileName}-edited.pdf" saved!`)
+        const defaultName = `${props.fileName}-edited.pdf`
+
+        if (window.electronAPI) {
+            const bytes = new Uint8Array(await blob.arrayBuffer())
+            const saved = await window.electronAPI.saveFile({ defaultName, bytes })
+            if (saved) success(`"${defaultName}" saved!`)
+        } else {
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = defaultName
+            a.click()
+            URL.revokeObjectURL(url)
+            success(`"${defaultName}" saved!`)
+        }
     } catch (err) {
         console.error(err)
         error('Export failed. Please try again.')

@@ -2,6 +2,8 @@
 import { ref } from 'vue'
 import { Analytics } from '@vercel/analytics/vue';
 
+const isElectron = typeof window !== 'undefined' && !!window.electronAPI
+
 import { usePdfDocument } from '@/composables/usePdfDocument.js'
 import { useToast } from '@/composables/useToast.js'
 import UploadZone from '@/components/UploadZone.vue'
@@ -57,7 +59,7 @@ function closeEditor() {
 
 <template>
   <div class="app-shell">
-    <Analytics />
+    <Analytics v-if="!isElectron" />
 
     <!-- ── Screen transition ── -->
     <Transition name="screen" mode="out-in">

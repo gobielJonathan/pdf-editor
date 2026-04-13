@@ -34,7 +34,16 @@ function validateAndEmit(file) {
 }
 
 function openPicker() {
-    fileInput.value?.click()
+    if (window.electronAPI) {
+        window.electronAPI.openFile().then((result) => {
+            if (!result) return
+            const blob = new Blob([result.buffer], { type: 'application/pdf' })
+            const file = new File([blob], result.name, { type: 'application/pdf' })
+            validateAndEmit(file)
+        })
+    } else {
+        fileInput.value?.click()
+    }
 }
 </script>
 
